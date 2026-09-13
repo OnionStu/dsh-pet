@@ -266,7 +266,7 @@ export function apply(ctx: any): void {
   let activePetId = '';
   // 命令触发的展示气泡缓存（/chat 命令写入；浏览器/桌面 1s 轮询 /broadcast 拉取，ts 变化即弹气泡）。
   // 与碎碎念周期缓存（whisperCache）独立：手动触发语义不受 whisperEnabled 门控（进程内，重启清空）
-  const broadcastCache = new Map<string, { text: string; ts: number }>();
+  const broadcastCache = new Map<string, { text: string; image?: string; ts: number }>();
   // 碎碎念生成缓存（按宠物独立）：每只启用的宠物在自己的周期内返回同一句（ts 不变），
   // 同宠物的多个端共享一句、避免重复 LLM 调用（进程内内存态，重启清空）。
   // image = 该次生成配的表情包名称（未开配图则为 undefined）——与 text 同生命周期，
@@ -414,9 +414,11 @@ export function apply(ctx: any): void {
    */
   const effectivePetList = (): Record<string, unknown>[] => flattenPetList(readAllConfig(configPaths));
 
-  /** 命令触发的展示气泡：/chat 命令写入（两端 1s 轮询 /broadcast 拉取展示）；覆盖手动触发场景 */
-  const broadcastTo = (petId: string, text: string): void => {
-    broadcastCache.set(petId, { text, ts: Date.now() });
+  /** 命令触发的展示气泡：/chat 命令写入（两端 1s 轮询 /broadcast 拉取展示）；覆盖手动触发场景。
+   *  image：配图名称（碎碎念/对话配图开关开启时由 host 抽定或模型选定），随文本一起进缓存——
+   *  与 /whisper 的 serveWhisper 契约对齐，否则命令这条路会把图丢掉（只剩文字气泡）。 */
+  const broadcastTo = (petId: string, text: string, image?: string): void => {
+    broadcastCache.set(petId, { text, image, ts: Date.now() });
   };
 
   /** 当前交互桌宠 id：/pet 已选且仍存在 → 该宠物；未选/已失效 → 有效宠物列表第一只（进程内，重启回默认） */
@@ -780,8 +782,9 @@ export function apply(ctx: any): void {
     }
 
     // 命令触发气泡广播：/dsh-pet-7340/broadcast?pet=<id>（GET，no-cache）
-    // /chat 命令把碎碎念/对话文本写入 broadcastCache，浏览器/桌面 1s 轻量轮询拉取，
-    // ts 变化即弹气泡——与 /balance/trigger 同语义（无缓存返回 ts=0，轮询侧恒定不触发）
+    // /chat 命令把碎碎念/对话文本（+配图名，与 /whisper 同契约）写入 broadcastCache，
+    // 浏览器/桌面 1s 轻量轮询拉取，ts 变化即弹气泡——与 /balance/trigger 同语义
+    // （无缓存返回 ts=0，轮询侧恒定不触发）
     if (rest === 'broadcast') {
       if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
       const petId = String(url.searchParams.get('pet') ?? '');
@@ -789,7 +792,7 @@ export function apply(ctx: any): void {
       return {
         kind: 'json',
         status: 200,
-        obj: { ok: true, text: hit?.text ?? '', ts: hit?.ts ?? 0 },
+        obj: { ok: true, text: hit?.text ?? '', image: hit?.image, ts: hit?.ts ?? 0 },
         headers: { 'cache-control': 'no-cache, no-store' },
       };
     }
@@ -1100,7 +1103,7 @@ export function apply(ctx: any): void {
               if (!w.ok) {
                 return { kind: 'error', text: '碎碎念生成失败' + (w.message ? '：' + w.message : '') };
               }
-              broadcastTo(petId, w.text ?? '');
+              broadcastTo(petId, w.text ?? '', w.image);
               return { kind: 'success', text: w.text ?? '' };
             }
             if (text.length > 2000) return { kind: 'error', text: '消息过长（限 2000 字）' };
@@ -1108,7 +1111,7 @@ export function apply(ctx: any): void {
             if (!r.ok) {
               return { kind: 'error', text: '对话失败' + (r.message ? '：' + r.message : '') };
             }
-            broadcastTo(petId, r.reply);
+            broadcastTo(petId, r.reply, r.image);
             return { kind: 'success', text: r.reply };
           } catch (e) {
             return { kind: 'error', text: '对话失败：' + (e instanceof Error ? e.message : String(e)) };

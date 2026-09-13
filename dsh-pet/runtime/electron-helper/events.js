@@ -149,7 +149,10 @@ PetSprite.prototype.startBroadcastLoop = function startBroadcastLoop() {
       }
       if (ts === 0 || ts === this.prevBroadcastTs) return; // 无广播 / 无变化
       this.prevBroadcastTs = ts;
-      if (typeof d.text === 'string' && d.text) this.showWhisper(d.text);
+      if (typeof d.text === 'string' && d.text) {
+        // image：host 侧抽定/模型选定的配图名（未开配图则 undefined）——与 /whisper 同契约
+        this.showWhisper(d.text, typeof d.image === 'string' ? d.image : '');
+      }
     } catch (e) {
       console.warn('[dsh-pet] 广播拉取异常 pet=' + this.pet.id, e);
     }

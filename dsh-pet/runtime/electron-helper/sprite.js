@@ -1104,9 +1104,7 @@ class PetSprite {
       // 弹窗同菜单：只允许在「窗口 ∩ 工作区」内显示，贴边时不被屏幕裁掉（#41）
       clamp: this.visibleClampRect(),
       onReply: (reply, image) => {
-        console.info(
-          '[dsh-pet] 对话回复 pet=' + this.pet.id + '「' + reply + '」' + (image ? ' [' + image + ']' : ''),
-        );
+        console.info('[dsh-pet] 对话回复 pet=' + this.pet.id + '「' + reply + '」' + (image ? ' [' + image + ']' : ''));
         this.showWhisper(reply, image); // 复用碎碎念链路：随机说话动画 + 气泡 10s（含配图）
       },
       onClose: () => {

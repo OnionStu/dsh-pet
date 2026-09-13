@@ -509,7 +509,12 @@ export function makePetUI(rt: {
         try {
           const r = await fetch('/dsh-pet-7340/broadcast?pet=' + encodeURIComponent(cfg.id), { cache: 'no-store' });
           if (!alive || !r.ok) return;
-          const d = (await r.json().catch(() => null)) as { ok?: unknown; text?: unknown; ts?: unknown } | null;
+          const d = (await r.json().catch(() => null)) as {
+            ok?: unknown;
+            text?: unknown;
+            image?: unknown;
+            ts?: unknown;
+          } | null;
           if (!d || d.ok !== true) return;
           const ts = typeof d.ts === 'number' ? d.ts : 0;
           if (!hasBaseline) {
@@ -521,7 +526,10 @@ export function makePetUI(rt: {
           }
           if (ts === 0 || ts === prevBroadcastTsRef.current) return; // 无广播 / 无变化
           prevBroadcastTsRef.current = ts;
-          if (typeof d.text === 'string' && d.text) triggerWhisper(d.text);
+          if (typeof d.text === 'string' && d.text) {
+            // image：host 侧抽定/模型选定的配图名（未开配图则 undefined）——与 /whisper 同契约
+            triggerWhisper(d.text, typeof d.image === 'string' ? d.image : undefined);
+          }
         } catch {
           /* 广播轮询失败静默：下一周期再试 */
         }
