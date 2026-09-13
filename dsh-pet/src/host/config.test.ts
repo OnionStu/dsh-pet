@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { readAllConfig, type ConfigPaths } from './config.ts';
+import { readAllConfig, saveUserConfig, type ConfigPaths } from './config.ts';
 
 /** 内置默认配置的完整最小形态（animations 整段必须合法——合并是整段替换/整段回退） */
 const BASE = {
@@ -151,5 +151,74 @@ describe('readAllConfig —— events 缺失仍回退默认（既有行为不回
       overlay: { whisperPrompt: '改个提示词' },
       expectWorkStatus: BASE.animations.events.workStatus,
     });
+  });
+});
+
+/** 跑一趟 readAllConfig：base 为内置默认（可注入表情包开关），overlay 为用户层 */
+function withBase(baseExtra: Record<string, unknown>, overlay?: Record<string, unknown>): ConfigPaths {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-pet-config-test-'));
+  const paths: ConfigPaths = {
+    defaultFile: join(dir, 'default.jsonc'),
+    userFile: join(dir, 'main-config.json'),
+    petDir: join(dir, 'pet'),
+  };
+  writeFileSync(paths.defaultFile, JSON.stringify({ ...BASE, ...baseExtra }));
+  if (overlay) writeFileSync(paths.userFile, JSON.stringify(overlay));
+  return paths;
+}
+
+/** 跑一趟 saveUserConfig：返回写入用户层的对象（null = 被 sanitize 拒绝） */
+function saveOnce(body: Record<string, unknown>, existing?: Record<string, unknown>): Record<string, unknown> | null {
+  return saveUserConfig(body, existing) as Record<string, unknown> | null;
+}
+
+const PETS = BASE.pets;
+
+describe('saveUserConfig —— 表情包配图开关（白名单 + 透传保留）', () => {
+  test('两个配图开关随请求体写入', () => {
+    const out = saveOnce({ pets: PETS, whisperImageEnabled: true, chatImageEnabled: true });
+    assert.equal(out?.whisperImageEnabled, true);
+    assert.equal(out?.chatImageEnabled, true);
+  });
+
+  test('未传开关时不写入（不凭空造字段）', () => {
+    const out = saveOnce({ pets: PETS });
+    assert.equal('whisperImageEnabled' in (out ?? {}), false);
+    assert.equal('chatImageEnabled' in (out ?? {}), false);
+  });
+
+  test('开关传非布尔 → 整体拒绝（宿主回 400）', () => {
+    assert.equal(saveOnce({ pets: PETS, whisperImageEnabled: 'yes' }), null);
+    assert.equal(saveOnce({ pets: PETS, chatImageEnabled: 1 }), null);
+  });
+
+  test('手写的 memes 映射表被透传保留（设置页保存不抹掉）', () => {
+    const memes = { 可爱: '我改过的描述' };
+    const out = saveOnce({ pets: PETS, whisperImageEnabled: false }, { pets: PETS, memes });
+    assert.deepEqual(out?.memes, memes);
+  });
+
+  test('请求体的开关值覆盖磁盘旧值（不被 existing 反向覆盖）', () => {
+    const out = saveOnce(
+      { pets: PETS, whisperImageEnabled: true },
+      { pets: PETS, whisperImageEnabled: false, chatImageEnabled: true },
+    );
+    assert.equal(out?.whisperImageEnabled, true); // 请求体优先
+    assert.equal(out?.chatImageEnabled, true); // 未传的旧值仍透传保留
+  });
+});
+
+describe('readAllConfig —— 表情包开关合并（缺失取默认 / 非法回退默认）', () => {
+  test('内置默认有值 → 用户层没写时读得到', () => {
+    const merged = readAllConfig(withBase({ whisperImageEnabled: true, chatImageEnabled: false }));
+    assert.equal(merged.main.whisperImageEnabled, true);
+    assert.equal(merged.main.chatImageEnabled, false);
+  });
+
+  test('用户层写了非法值 → 回退内置默认', () => {
+    const merged = readAllConfig(
+      withBase({ whisperImageEnabled: true, chatImageEnabled: false }, { whisperImageEnabled: 'yes' }),
+    );
+    assert.equal(merged.main.whisperImageEnabled, true); // 回退默认 true
   });
 });

@@ -85,6 +85,10 @@ export const zh = {
     '另 {n} 只额外宠物由 pet/ 目录文件定义（<名>-config.json + <名>-animation/），它们不在此列表——改文件即生效，刷新可见。',
   notifyToggle: '系统通知',
   notifyToggleHint: '对话完成 / 生成失败 / 权限申请 / 用户选择，在窗口失焦时弹出系统级通知（桌面右下角）。',
+  whisperImageToggle: '碎碎念配图',
+  whisperImageToggleHint: '碎碎念时从表情包池随机抽一张，连同那句话一起显示（图片映射在配置文件顶层 memes）。',
+  chatImageToggle: '对话配图',
+  chatImageToggleHint: '对话时由 AI 按当前语境从表情包池挑一张配图（可不挑；图片映射在配置文件顶层 memes）。',
   notifyGetPermission: '获取权限',
   notifyPermissionOk: '已获得通知权限，右下角出现测试通知。',
   notifyDenyUnsupported: '当前环境不支持系统通知（浏览器无 Notification API）。',
@@ -151,6 +155,12 @@ export const en = {
   notifyToggle: 'System notifications',
   notifyToggleHint:
     'OS-level toasts (bottom-right of the desktop) for conversation completion, failures, permission requests, and questions — only while this window is unfocused.',
+  whisperImageToggle: 'Whisper images',
+  whisperImageToggleHint:
+    'Attach one random meme from the pool to each whisper line (image mapping lives in the top-level `memes` config field).',
+  chatImageToggle: 'Chat images',
+  chatImageToggleHint:
+    'Let the AI pick one meme from the pool that fits the current context (optional; mapping lives in the top-level `memes` config field).',
   notifyGetPermission: 'Get permission',
   notifyPermissionOk: 'Notification permission granted — a test notification was sent.',
   notifyDenyUnsupported: 'System notifications are not supported in this environment (no Notification API).',
@@ -232,20 +242,25 @@ export function makePetConfigSection(rt: {
 
     // 系统通知总开关（全局：读写用户级配置 main-config.json 的 notificationsEnabled；即时生效）
     const [notifyEnabled, setNotifyEnabled] = useState(true);
+    // 表情包配图开关（全局：写用户级配置；与「保存」一起提交，不做即时写入）
+    const [whisperImage, setWhisperImage] = useState(false);
+    const [chatImage, setChatImage] = useState(false);
     // 权限申请按钮的反馈（就地显示在按钮旁，与全局保存反馈分离）
     const [permMsg, setPermMsg] = useState<{ kind: 'ok' | 'err' | ''; text: string }>({ kind: '', text: '' });
     useEffect(() => {
       let alive = true;
-      // 成品聚合的 main 条目已带合并后的 notificationsEnabled（用户手写值优先）
+      // 成品聚合的 main 条目已带合并后的全局字段（用户手写值优先）
       fetch('/dsh-pet-7340/config')
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => {
-          const v =
-            d && d.main && typeof d.main.notificationsEnabled === 'boolean' ? d.main.notificationsEnabled : null;
-          if (alive && v !== null) setNotifyEnabled(v);
+          if (!alive || !d || !d.main) return;
+          const m = d.main as Record<string, unknown>;
+          if (typeof m.notificationsEnabled === 'boolean') setNotifyEnabled(m.notificationsEnabled);
+          if (typeof m.whisperImageEnabled === 'boolean') setWhisperImage(m.whisperImageEnabled);
+          if (typeof m.chatImageEnabled === 'boolean') setChatImage(m.chatImageEnabled);
         })
         .catch(() => {
-          /* 成品拉取失败时保持默认（true） */
+          /* 成品拉取失败时保持默认（通知开、配图关） */
         });
       return () => {
         alive = false;
@@ -258,11 +273,17 @@ export function makePetConfigSection(rt: {
       try {
         // 开启时先借用户手势申请系统通知权限（无手势的自动申请可能被浏览器静默压制）
         if (v) await requestNotificationPermission();
-        // 与保存同构：整包写用户级配置（pets + 开关），避免开关写入被 sanitize 拒绝
+        // 与保存同构：整包写用户级配置（pets + 全部全局开关），避免开关写入被 sanitize 拒绝
+        // 携带配图开关的当前 UI 值：整包写入下漏传即等于把它们重置掉
         const res = await fetch('/dsh-pet-7340/config', {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ pets: pets, notificationsEnabled: v }),
+          body: JSON.stringify({
+            pets: pets,
+            notificationsEnabled: v,
+            whisperImageEnabled: whisperImage,
+            chatImageEnabled: chatImage,
+          }),
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         setNotifyEnabled(v);
@@ -337,7 +358,12 @@ export function makePetConfigSection(rt: {
       setMsg({ kind: '', text: '' });
       try {
         // 通知总开关随保存一起写：UI 状态初始来自成品 main 条目（即保留用户手写值，不会静默覆盖）
-        const body: Record<string, unknown> = { pets: pets, notificationsEnabled: notifyEnabled };
+        const body: Record<string, unknown> = {
+          pets: pets,
+          notificationsEnabled: notifyEnabled,
+          whisperImageEnabled: whisperImage,
+          chatImageEnabled: chatImage,
+        };
         const res = await fetch('/dsh-pet-7340/config', {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
@@ -757,6 +783,40 @@ export function makePetConfigSection(rt: {
             }),
           ],
         }),
+
+        // 表情包配图开关（全局，随「保存」写入用户级配置；不即时写入——不改变正在进行的渲染）
+        ...(
+          [
+            ['whisperImageToggle', whisperImage, setWhisperImage] as const,
+            ['chatImageToggle', chatImage, setChatImage] as const,
+          ] as const
+        ).map(([label, value, setter]) =>
+          h('label', {
+            key: label,
+            style: {
+              display: 'flex',
+              gap: '8px',
+              alignItems: 'center',
+              marginTop: '8px',
+              fontSize: '13px',
+              color: 'var(--dsw-alias-label-primary)',
+            },
+            children: [
+              h('input', {
+                type: 'checkbox',
+                checked: value,
+                disabled: busy,
+                onChange: (e: ChangeEvent<HTMLInputElement>) => setter(e.target.checked),
+                style: { width: '16px', height: '16px', accentColor: 'var(--dsw-alias-state-business-primary)' },
+              }),
+              h('span', { children: t(label) }),
+              h('span', {
+                style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' },
+                children: t(label + 'Hint'),
+              }),
+            ],
+          }),
+        ),
 
         // 权限获取按钮 + 反馈（独立一行，样式对齐设置页现有按钮）
         h('div', {

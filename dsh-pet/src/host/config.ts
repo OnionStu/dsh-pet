@@ -199,6 +199,10 @@ function topFieldValid(key: string, value: unknown): boolean {
     }
     case 'notificationsEnabled':
       return typeof value === 'boolean';
+    case 'whisperImageEnabled':
+      return typeof value === 'boolean';
+    case 'chatImageEnabled':
+      return typeof value === 'boolean';
     case 'animations':
       return animationsValid(value);
     case 'animationWeights':
@@ -426,16 +430,17 @@ export function findPetInstance(
 }
 
 /**
- * 保存用户层（PUT /config）：更新 main-config.json，接受可编辑字段（pets + notificationsEnabled）。
- * 编辑语义：**非白名单顶层字段（physics / whisperPrompt / chatMemoryRounds / eventsRefreshSec 等）
- * 从 `existing`（当前磁盘上的用户文件原对象）原样透传保留**——
+ * 保存用户层（PUT /config）：更新 main-config.json，接受可编辑字段（pets + 全局开关：
+ * notificationsEnabled / whisperImageEnabled / chatImageEnabled）。
+ * 编辑语义：**非白名单顶层字段（physics / whisperPrompt / chatMemoryRounds / eventsRefreshSec /
+ * memes 等）从 `existing`（当前磁盘上的用户文件原对象）原样透传保留**——
  * 用户手动编辑的精调配置不会被设置页保存抹掉（旧实现是纯白名单重建，会整体覆盖丢失）。
  * 非法 → 返回 null（宿主回 400）。与读取分离——文件宠物永不回写、不在本模式内。
  */
 export function saveUserConfig(
   raw: unknown,
   existing?: Record<string, unknown>,
-): { pets: unknown[]; notificationsEnabled?: boolean; [key: string]: unknown } | null {
+): { pets: unknown[]; [key: string]: unknown } | null {
   const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   const arr = Array.isArray(o.pets) ? o.pets : null;
   if (!arr || !arr.length) return null;
@@ -481,15 +486,27 @@ export function saveUserConfig(
   }
   const ne = o.notificationsEnabled;
   if (ne !== undefined && typeof ne !== 'boolean') return null;
-  // 白名单可编辑字段：pets 来自请求体、notificationsEnabled 来自请求体（未传则不写）
-  const outConfig: { pets: unknown[]; notificationsEnabled?: boolean; [key: string]: unknown } = { pets: out };
+  const wie = o.whisperImageEnabled;
+  if (wie !== undefined && typeof wie !== 'boolean') return null;
+  const cie = o.chatImageEnabled;
+  if (cie !== undefined && typeof cie !== 'boolean') return null;
+  // 白名单可编辑字段：pets 来自请求体、三个全局开关来自请求体（未传则不写）
+  const outConfig: { pets: unknown[]; [key: string]: unknown } = { pets: out };
   if (ne !== undefined) outConfig.notificationsEnabled = ne;
+  if (wie !== undefined) outConfig.whisperImageEnabled = wie;
+  if (cie !== undefined) outConfig.chatImageEnabled = cie;
   // 透传保留：请求体未携带的顶层字段，从 existing（磁盘现有用户文件）原样带回——
-  // 设置页只提交 pets(+notificationsEnabled)，手改的 physics/whisperPrompt/... 借此保住
+  // 设置页只提交 pets(+全局开关)，手改的 physics/whisperPrompt/memes/... 借此保住。
+  // 全局开关只在「请求体传了」时才算白名单（已由上方写入）；未传时走这里透传磁盘旧值——
+  // 否则整包调用的调用方漏传一个开关，就会把用户既有设置悄悄抹成默认。
+  const bodyOwned = new Set(['pets']);
+  if (ne !== undefined) bodyOwned.add('notificationsEnabled');
+  if (wie !== undefined) bodyOwned.add('whisperImageEnabled');
+  if (cie !== undefined) bodyOwned.add('chatImageEnabled');
   if (existing && typeof existing === 'object') {
     for (const key of Object.keys(existing)) {
-      if (key === 'pets' || key === 'notificationsEnabled') continue; // 白名单字段由上方请求体决定
-      // 只透传可精调的顶层字段，其余（如 unknown/占位）一并保留，不丢弃用户内容
+      if (bodyOwned.has(key)) continue; // 白名单字段由请求体决定
+      // 只透传可精调的顶层字段，其余（如 memes/unknown/占位）一并保留，不丢弃用户内容
       outConfig[key] = existing[key];
     }
   }

@@ -132,6 +132,10 @@ export interface PhysicsParams {
 export interface ClientConfig {
   /** 系统通知总开关：true=对话完成/生成失败/输出截断/权限申请/用户选择时弹出系统通知；缺失即配置错误 */
   notificationsEnabled: boolean;
+  /** 碎碎念配图开关：true=碎碎念每次从表情包池随机抽 1 张连同文本显示（碎碎念无上下文，故随机） */
+  whisperImageEnabled: boolean;
+  /** 对话配图开关：true=对话时把表情包清单交模型按语境选 1 张（可不选）；false=纯文本 */
+  chatImageEnabled: boolean;
   pets: Pet[];
   animations: Animations;
   animationWeights: Weights;
