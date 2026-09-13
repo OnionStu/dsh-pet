@@ -119,7 +119,7 @@ PetSprite.prototype.startWhisperLoop = function startWhisperLoop() {
       if (state.ts !== this.prevWhisperTs) {
         this.prevWhisperTs = state.ts;
         this.whisperText = state.text;
-        this.showWhisper(state.text);
+        this.showWhisper(state.text, state.image);
       }
     } catch (e) {
       console.warn('[dsh-pet] 碎碎念拉取异常 pet=' + this.pet.id, e);
@@ -159,7 +159,8 @@ PetSprite.prototype.startBroadcastLoop = function startBroadcastLoop() {
 };
 
 // 碎碎念展示（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（10s 消失，与余额同一语义）
-PetSprite.prototype.showWhisper = function showWhisper(text) {
+// image：host 随机抽定的配图名称（未开配图/池为空则空串，与浏览器端同一契约）
+PetSprite.prototype.showWhisper = function showWhisper(text, image) {
   const pool = this.animations.events?.whisper;
   if (!pool || pool.length === 0) {
     console.error('[dsh-pet] 配置缺少 animations.events.whisper，无法播放碎碎念动画');
@@ -176,11 +177,13 @@ PetSprite.prototype.showWhisper = function showWhisper(text) {
       name +
       '] 「' +
       text +
-      '」',
+      '」' +
+      (image ? ' [' + image + ']' : ''),
   );
   this.stopMove();
   this.whisperOn = true;
   this.whisperView = S.whisperBubbleView({ ok: true, text, ts: 0 });
+  this.whisperImage = typeof image === 'string' ? image : '';
   this.renderBubble();
   // 气泡 10s 定时消失（与动画解耦，与余额同一语义；重复触发先清旧定时器）
   if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);

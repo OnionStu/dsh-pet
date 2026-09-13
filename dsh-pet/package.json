@@ -57,6 +57,7 @@
     "runtime/electron-helper",
     "assets/fonts",
     "assets/pic",
+    "assets/memes",
     "assets/config.jsonc",
     "scripts/ensure-electron.mjs",
     "cordis.patch.yml"

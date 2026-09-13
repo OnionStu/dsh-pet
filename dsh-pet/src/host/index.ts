@@ -53,6 +53,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import { queryBalance } from './balance';
 import { generateWhisper } from './whisper';
 import { generateChat, type ChatMemoryMessage } from './chat';
+import { pickMeme, readMemePool } from './memes';
 import { findPetInstance, flattenPetList, readAllConfig, saveUserConfig, type ConfigPaths } from './config';
 import {
   GOAL_UPDATE_TOOL,
@@ -79,6 +80,9 @@ export const inject = ['webServer', 'agentDefaultModel', 'credentials', 'llm', '
 
 /** 本包目录：宿主构建产物位于 lib/，其上一级即包根。 */
 const PACKAGE_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+
+/** 包内 assets 根（表情包池解析用：assets/memes/<名称>.png） */
+const PACKAGE_ROOT_ASSETS = join(PACKAGE_ROOT, 'assets');
 
 /** 路由前缀 */
 const ROUTE_PREFIX = '/dsh-pet-7340';
@@ -264,8 +268,10 @@ export function apply(ctx: any): void {
   // 与碎碎念周期缓存（whisperCache）独立：手动触发语义不受 whisperEnabled 门控（进程内，重启清空）
   const broadcastCache = new Map<string, { text: string; ts: number }>();
   // 碎碎念生成缓存（按宠物独立）：每只启用的宠物在自己的周期内返回同一句（ts 不变），
-  // 同宠物的多个端共享一句、避免重复 LLM 调用（进程内内存态，重启清空）
-  const whisperCache = new Map<string, { text: string; ts: number }>();
+  // 同宠物的多个端共享一句、避免重复 LLM 调用（进程内内存态，重启清空）。
+  // image = 该次生成配的表情包名称（未开配图则为 undefined）——与 text 同生命周期，
+  // 保证周期内多端看到的是"同一句话配同一张图"
+  const whisperCache = new Map<string, { text: string; image?: string; ts: number }>();
 
   // 对话记忆文件（唯一读写方 = 本进程；浏览器/桌面两端都只是客户端 → 同一实例天然共享同一份记忆）。
   // 结构双层：{ <种类桶 assetRoot ?? petId>: { <实例 id>: { messages: ChatMemoryMessage[] } } }
@@ -337,11 +343,13 @@ export function apply(ctx: any): void {
   /** 生成/返回某宠物的一句碎碎念（周期 GET 与菜单手动触发共用的同一逻辑）：
    *  每只宠物独立生成（所属条目的人设），缓存按 pet 分开；
    *  force=false 走周期节流（缓存期内返回同一句 ts），force=true 强制新生成并刷新缓存
-   *  （右键菜单「碎碎念」手动触发：绕过节流立即新出一句，同宠多端下次轮询看到新 ts 一起展示）。 */
+   *  （右键菜单「碎碎念」手动触发：绕过节流立即新出一句，同宠多端下次轮询看到新 ts 一起展示）。
+   *  配图（whisperImageEnabled 开启时）：从表情包池**随机抽 1 张**，把描述注入指令并随文本带回；
+   *  连图带句一起进缓存——周期内多端轮询看到的是同一张图（同 ts 同图，语义与文本一致）。 */
   const serveWhisper = async (
     petId: string,
     force: boolean,
-  ): Promise<{ ok: boolean; text?: string; ts?: number; reason?: string; message?: string }> => {
+  ): Promise<{ ok: boolean; text?: string; image?: string; ts?: number; reason?: string; message?: string }> => {
     const cfg = readAllConfig(configPaths);
     const found = findPetInstance(cfg, petId);
     const conf = found ? found.conf : (cfg.main ?? {});
@@ -352,14 +360,17 @@ export function apply(ctx: any): void {
     const now = Date.now();
     const cached = whisperCache.get(petId);
     if (!force && cached && now - cached.ts < intervalSec * 1000) {
-      return { ok: true, text: cached.text, ts: cached.ts };
+      return { ok: true, text: cached.text, image: cached.image, ts: cached.ts };
     }
-    const result = await generateWhisper(ctx, system);
+    // 配图：全局开关关闭 / 池为空 / 池内图片全缺失 → 纯文本（不报错，退化为原行为）
+    const meme =
+      conf.whisperImageEnabled === true ? pickMeme(readMemePool(conf.memes, PACKAGE_ROOT_ASSETS)) : undefined;
+    const result = await generateWhisper(ctx, system, meme);
     if (!result.ok) {
       return { ok: false, reason: result.reason, message: result.message };
     }
-    whisperCache.set(petId, { text: result.text, ts: now });
-    return { ok: true, text: result.text, ts: now };
+    whisperCache.set(petId, { text: result.text, image: result.image, ts: now });
+    return { ok: true, text: result.text, image: result.image, ts: now };
   };
 
   /** 与某只宠物对话：截取最近记忆 → 生成回复 → 写入记忆 → 返回 {reply,ts}。
@@ -826,9 +837,12 @@ export function apply(ctx: any): void {
     }
 
     // 通知图标：/dsh-pet-7340/pic/<file> → 包内 assets/pic（方形 png，系统通知 icon 用）
+    // 表情包同走 pic 前缀（/pic/memes/<名称>.png → 包内 assets/memes）——都是"包内静态图"，
+    // 共用一条路由与防穿越校验；名称含中文，URL 段已在上方 decodeURIComponent 解码。
     if (scope === 'pic') {
-      const picRoot = join(PACKAGE_ROOT, 'assets', 'pic');
-      const picFile = resolveExisting(picRoot, restParts.join('/'));
+      const isMeme = restParts[0] === 'memes';
+      const picRoot = join(PACKAGE_ROOT, 'assets', isMeme ? 'memes' : 'pic');
+      const picFile = resolveExisting(picRoot, (isMeme ? restParts.slice(1) : restParts).join('/'));
       if (picFile === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: pic not found' };
       const ext = picFile.slice(picFile.lastIndexOf('.')).toLowerCase();
       return { kind: 'file', file: picFile, contentType: MIME[ext] ?? 'application/octet-stream' };

@@ -6,6 +6,9 @@
  * 设计：
  * - provider/model 直接取 agentDefaultModel.currentSelection()（与余额同源）；
  * - system = 用户配置的 whisperPrompt（人设），user = 一个极简的"说句话"请求；
+ * - 配图（可选）：开启 whisperImageEnabled 时，由调用方从表情包池随机抽一张传入，
+ *   把该图描述注入 user 指令，让这句话配合画面说——随机而非让模型选：
+ *   碎碎念本身没有上下文可选（人设固定、无用户输入），交模型"选"只能盲选且多了幻觉风险；
  * - reasoningEffort: 'off' —— 仅当模型声明支持 reasoning effort（含 "off"）时传，
  *   关闭深度思考：碎碎念只求随口一句，不开推理（省时省 token）。无 reasoning 元数据的
  *   模型（如 reasoningEfforts: false）显式传 off 会被 dsh-llm 判为 UNSUPPORTED_REASONING_EFFORT
@@ -19,20 +22,43 @@ import { supportsReasoningOff } from './llm-reasoning';
 
 /** 生成失败原因（与 shared/whisper.ts 的 WhisperState 失败分支同构） */
 export type WhisperGenerateResult =
-  { ok: true; text: string } | { ok: false; reason: 'provider-missing' | 'generate-error'; message?: string };
+  | { ok: true; text: string; image?: string }
+  | { ok: false; reason: 'provider-missing' | 'generate-error'; message?: string };
 
 /** 单次生成超时（ms）：骈骈念不需要长输出，30s 足够 */
 const TIMEOUT_MS = 30_000;
+
+/** 碎碎念指令：纯文本（原行为） */
+const USER_TEXT = '随便说一句日常碎碎念，一句就好，20 字以内。';
+
+/**
+ * 碎碎念指令：带表情包（用户开启 whisperImageEnabled 时）——要求模型配合作画说一句。
+ * 明确「正文仍是一句话」：图是配图，不是让模型描述画面本身。
+ */
+function userTextWithMeme(meme: { name: string; desc: string }): string {
+  return (
+    '随便说一句日常碎碎念，一句就好，20 字以内。\n' +
+    '这次会配一张表情包一起显示，图的内容是：' +
+    meme.name +
+    '（' +
+    meme.desc +
+    '）。\n' +
+    '请让这句话和这张图的情绪/场景自然契合，像是配合画面说出来的；不要描述画面本身。'
+  );
+}
 
 /**
  * 用当前对话的 provider/model 生成一句碎碎念。
  * @param ctx 宿主上下文（注入 agentDefaultModel / llm）
  * @param system 人设提示词（whisperPrompt）
- * @returns 生成的文本，或结构化失败（provider 缺失 / 生成错误）
+ * @param meme 配图（开启配图时传入；缺省 = 纯文本碎碎念）。生成成功时原样带回，
+ *             客户端据此展示图片（host 不判断模型是否真的贴合）
+ * @returns 生成的文本（+ 配图），或结构化失败（provider 缺失 / 生成错误）
  */
 export async function generateWhisper(
   ctx: { agentDefaultModel: { currentSelection(): { provider: string; model: string } }; llm?: unknown },
   system: string,
+  meme?: { name: string; desc: string },
 ): Promise<WhisperGenerateResult> {
   let sel: { provider: string; model: string };
   try {
@@ -59,7 +85,7 @@ export async function generateWhisper(
     model: sel.model,
     messages: [
       createUserMessage({
-        content: [{ type: 'text', text: '随便说一句日常碎碎念，一句就好，20 字以内。' }],
+        content: [{ type: 'text', text: meme ? userTextWithMeme(meme) : USER_TEXT }],
         source: { kind: 'plugin', plugin: 'dsh-pet' },
       }),
     ],
@@ -91,5 +117,5 @@ export async function generateWhisper(
     .join('')
     .trim();
   if (!text) return { ok: false, reason: 'generate-error', message: '模型未返回文本' };
-  return { ok: true, text };
+  return meme ? { ok: true, text, image: meme.name } : { ok: true, text };
 }

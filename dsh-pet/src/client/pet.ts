@@ -160,8 +160,9 @@ export function makePetUI(rt: {
     // 碎碎念气泡（独立于余额气泡：文本气泡与余额行气泡互不干扰，各自 10s 显隐）
     const [whisperBubbleOn, setWhisperBubbleOn] = useState(false);
     const whisperBubbleTimerRef = useRef<number | null>(null);
-    // 碎碎念当前文本（本宠物独立生成的句子）
+    // 碎碎念当前文本（本宠物独立生成的句子）+ 配图名称（开启配图时由 host 随机抽定，随文本一起来）
     const [whisperText, setWhisperText] = useState<string | null>(null);
+    const [whisperImage, setWhisperImage] = useState<string | undefined>(undefined);
     // 工作状态气泡：DSH 会话状态联动（workStatusEnabled 开启时）——文本气泡独立于碎碎念，10s 显隐
     const [workBubbleOn, setWorkBubbleOn] = useState(false);
     const workBubbleTimerRef = useRef<number | null>(null);
@@ -473,7 +474,7 @@ export function makePetUI(rt: {
             if (state.ts !== prevWhisperTsRef.current) {
               prevWhisperTsRef.current = state.ts;
               whisperTextRef.current = state.text;
-              triggerWhisper(state.text);
+              triggerWhisper(state.text, state.image);
             }
           } else {
             console.warn(
@@ -535,7 +536,8 @@ export function makePetUI(rt: {
     }, [cfg.id]);
 
     // 碎碎念触发（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（10s 消失，与动画解耦）
-    const triggerWhisper = (text: string) => {
+    // image：host 侧随机抽定的配图名称（未开配图/池为空则 undefined）——与文本同一次触发一起来
+    const triggerWhisper = (text: string, image?: string) => {
       const pool = petAnims.events?.whisper;
       if (!pool || pool.length === 0) {
         console.error('[dsh-pet] 配置缺少 animations.events.whisper，无法播放碎碎念动画');
@@ -556,6 +558,7 @@ export function makePetUI(rt: {
       );
       stopMove();
       setWhisperText(text);
+      setWhisperImage(image);
       setWhisperBubbleOn(true);
       // 气泡 10s 定时消失（与动画解耦；重复触发先清旧定时器）
       if (whisperBubbleTimerRef.current !== null) window.clearTimeout(whisperBubbleTimerRef.current);
@@ -1222,7 +1225,7 @@ export function makePetUI(rt: {
         fetchWhisperTrigger('/dsh-pet-7340/whisper/trigger?pet=' + encodeURIComponent(cfg.id))
           .then((state) => {
             if (state.ok) {
-              triggerWhisper(state.text);
+              triggerWhisper(state.text, state.image);
             } else {
               console.warn(
                 '[dsh-pet] 碎碎念手动触发失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''),
@@ -1359,8 +1362,9 @@ export function makePetUI(rt: {
         balance && balance.ok && cfg.balanceEnabled ? h(BalanceBubble, { state: balance, on: bubbleOn }) : null,
         // 碎碎念/对话气泡：**不受 whisperEnabled 限制**（该字段只关自动周期轮询的触发，
         // 见上头 useEffect 的 319 行门控）；whisperText 只由 triggerWhisper 设置——
-        // 自动轮询被门控后不会触发，所以这里任何说话气泡（碎碎念/对话回复）都照常渲染
-        whisperText ? h(WhisperBubble, { text: whisperText, on: whisperBubbleOn }) : null,
+        // 自动轮询被门控后不会触发，所以这里任何说话气泡（碎碎念/对话回复）都照常渲染。
+        // image 为该次配图（碎碎念/对话配图开关开启时由 host 抽定/模型选定）
+        whisperText ? h(WhisperBubble, { text: whisperText, image: whisperImage, on: whisperBubbleOn }) : null,
         // 工作状态气泡（仅启用工作状态联动的宠物渲染；文本 = 任务详情优先，状态文案兜底）
         workText && cfg.workStatusEnabled ? h(WhisperBubble, { text: workText, on: workBubbleOn }) : null,
         h('div', {

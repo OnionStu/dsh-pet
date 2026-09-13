@@ -89,11 +89,13 @@ class PetSprite {
     this.bubbleTimer = null;
     this.balanceView = null;
     this.prevTick = 0;
-    // 碎碎念（每只独立：自己轮询 /whisper?pet=<id>、自己的文本与触发）
+    // 碎碎念（每只独立：自己轮询 /whisper?pet=<id>、自己的文本/配图与触发）
     this.whisperOn = false;
     this.whisperTimer = null;
     this.whisperView = null;
     this.whisperText = '';
+    // 配图名称（配置 memes 的键；whisperImageEnabled 开启时由 host 随机抽定，随文本一起来）
+    this.whisperImage = '';
     this.whisperBaseline = false;
     this.prevWhisperTs = 0;
     this.whisperLoopTimer = null;
@@ -1072,7 +1074,7 @@ class PetSprite {
     S.fetchWhisperTrigger(WHISPER_URL + '/trigger?pet=' + encodeURIComponent(this.pet.id))
       .then((state) => {
         if (state.ok) {
-          this.showWhisper(state.text);
+          this.showWhisper(state.text, state.image);
         } else {
           console.warn('[dsh-pet] 菜单碎碎念失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
         }
@@ -1129,7 +1131,11 @@ class PetSprite {
   renderBubble() {
     // 气泡优先级：工作状态 > 碎碎念 > 余额（工作状态是 DSH 真实状态，最要紧；三者都关时隐藏）
     // 工作气泡与碎碎念同款弹窗样式：宽度自适应 + 自动换行（is-whisper：正常 white-space、宽随内容）
+    // 配图标记交给 CSS：带图时取消 min-width（样式在 shared 的 MEME_BUBBLE_CSS，两端同一份）。
+    // 图片 URL 与视频同规则：传 BASE 前缀（桌面是 file:// 页面，必须绝对地址）
+    const whisperImg = this.whisperOn ? S.createMemeImage(this.whisperImage, BASE) : null;
     this.bubble.classList.toggle('is-whisper', this.workOn || (this.whisperOn && !!this.whisperView));
+    this.bubble.classList.toggle(S.MEME_BUBBLE_CLASS, !!whisperImg);
     if (this.workOn) {
       // 工作状态气泡：workOn 期间占位（文本缺失时隐藏，绝不让更弱的碎碎念/余额气泡反超）
       if (!this.workText) {
@@ -1148,6 +1154,8 @@ class PetSprite {
     }
     if (this.whisperOn && this.whisperView) {
       this.bubble.innerHTML = '';
+      // 配图（shared 生成的 <img> + 共用样式）：先看图再读话，符合"配图"的阅读顺序
+      if (whisperImg) this.bubble.appendChild(whisperImg);
       const line = document.createElement('div');
       line.className = 'pet-bub-row';
       line.textContent = this.whisperView[0]?.text ?? '';
