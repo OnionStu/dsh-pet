@@ -51,3 +51,26 @@ export function matchMeme(pool: MemeEntry[], name: string): MemeEntry | undefine
   const key = String(name ?? '').trim();
   return key ? pool.find((m) => m.name === key) : undefined;
 }
+
+/** 配图选择标记：`[图:名称]` 附在回复末尾（容忍全角冒号与前后空白） */
+const IMG_TAG = /\[图[:：]\s*([^\]\n]+?)\s*\]\s*$/;
+
+/**
+ * 从模型回复里取配图（对话选图的解析半侧；纯函数，无 LLM 依赖）：
+ * - 命中池内 → 采纳该图，并把标记从正文剥离（标记不得留在用户可见文本里）；
+ * - 未命中（模型幻觉名称）/ 空池 / 只回标记不回正文 → 一律视为"没选"，
+ *   **正文原样保留**（解析失败绝不吞掉回复）。
+ */
+export function extractChatImage(text: string, pool: MemeEntry[]): { text: string; image?: string } {
+  const m = IMG_TAG.exec(text);
+  if (!m) return { text };
+  const hit = matchMeme(pool, m[1] ?? '');
+  const body = text.slice(0, m.index).trim();
+  if (!hit || !body) return { text };
+  return { text: body, image: hit.name };
+}
+
+/** 表情包清单 → 给模型看的候选列表（一行一张：名称 + 描述） */
+export function memeCatalog(pool: MemeEntry[]): string {
+  return pool.map((m) => '- ' + m.name + '：' + m.desc).join('\n');
+}

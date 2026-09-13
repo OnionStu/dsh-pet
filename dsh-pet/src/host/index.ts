@@ -374,31 +374,38 @@ export function apply(ctx: any): void {
   };
 
   /** 与某只宠物对话：截取最近记忆 → 生成回复 → 写入记忆 → 返回 {reply,ts}。
-   *  供 /chat 端点（POST）与 /chat 命令共用同一条路径（锁内读写，防两端交错写盘）。 */
+   *  供 /chat 端点（POST）与 /chat 命令共用同一条路径（锁内读写，防两端交错写盘）。
+   *  配图（chatImageEnabled 开启时）：把表情包清单交给模型按语境选一张，命中池内才随回复带回。 */
   const chatWithPet = async (
     petId: string,
     text: string,
   ): Promise<
-    | { ok: true; reply: string; ts: number }
+    | { ok: true; reply: string; image?: string; ts: number }
     | { ok: false; reason: 'provider-missing' | 'generate-error'; message?: string }
   > =>
     withMemoryLock(async () => {
       const cfg = readAllConfig(configPaths);
       const rounds = memoryRounds(petId, cfg);
+      const conf = (findPetInstance(cfg, petId) ?? { conf: cfg.main ?? {} }).conf;
       // 人设：所属条目的 whisperPrompt（合并器已填默认）+ 名字声明（与碎碎念同一拼装）
       const system = petSystemPrompt(petId, cfg);
+      // 配图：开关关闭 → 空池（指令与解析都不介入，与旧行为逐字一致）
+      const pool = conf.chatImageEnabled === true ? readMemePool(conf.memes, PACKAGE_ROOT_ASSETS) : [];
       const mem = await readMemory();
       const bucketKey = findPetInstance(cfg, petId)?.entry ?? petId;
       const bucket = (mem[bucketKey] ??= {});
       const entry = (bucket[petId] ??= { messages: [] });
       const list = entry.messages.slice().slice(-rounds * 2);
-      const generated = await generateChat(ctx, system, list, text);
+      const generated = await generateChat(ctx, system, list, text, pool);
       if (!generated.ok) return generated;
       const now = Date.now();
       entry.messages.push({ role: 'user', content: text, ts: now });
+      // 记忆只存正文（配图属展示层，不进上下文——否则下次请求会把标记当历史读回去）
       entry.messages.push({ role: 'assistant', content: generated.text, ts: now });
       await writeMemory(mem);
-      return { ok: true as const, reply: generated.text, ts: now };
+      return generated.image
+        ? { ok: true as const, reply: generated.text, image: generated.image, ts: now }
+        : { ok: true as const, reply: generated.text, ts: now };
     });
 
   /**

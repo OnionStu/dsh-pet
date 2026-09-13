@@ -1248,9 +1248,9 @@ export function makePetUI(rt: {
           baseUrl: '/dsh-pet-7340/chat',
           x: hitRect ? hitRect.right + 6 : window.innerWidth - 256,
           y: hitRect ? hitRect.top + 6 : 8,
-          onReply: (reply) => {
-            console.info('[dsh-pet] 对话回复 pet=' + cfg.id + '「' + reply + '」');
-            triggerWhisper(reply); // 复用碎碎念链路：随机说话动画 + 气泡 10s 消失
+          onReply: (reply, image) => {
+            console.info('[dsh-pet] 对话回复 pet=' + cfg.id + '「' + reply + '」' + (image ? ' [' + image + ']' : ''));
+            triggerWhisper(reply, image); // 复用碎碎念链路：随机说话动画 + 气泡 10s（含配图）
           },
           onClose: () => {
             chatRef.current = null;

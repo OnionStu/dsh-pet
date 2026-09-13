@@ -10,9 +10,10 @@
 //    展示/动画由调用方走碎碎念那条链路（两端各自的 triggerWhisper / showWhisper）。
 // 记忆语义：memory.json 全存不删；host 每次请求只截尾部 chatMemoryRounds 轮进上下文。
 
-/** POST /dsh-pet-7340/chat?pet=<id> {text}：新回复（host 已写入记忆） */
+/** POST /dsh-pet-7340/chat?pet=<id> {text}：新回复（host 已写入记忆）
+ *  image = 本次回复配的表情包名称（chatImageEnabled 开启且模型选中池内图片时才有） */
 export type ChatSendState =
-  | { ok: true; reply: string; ts: number }
+  | { ok: true; reply: string; image?: string; ts: number }
   | { ok: false; reason: 'provider-missing' | 'generate-error' | 'config-error' | 'bad-request'; message?: string };
 
 const SEND_TIMEOUT_MS = 60_000; // 对话要等 LLM 生成回复，比碎碎念（30s）放宽一倍
@@ -41,7 +42,8 @@ export async function sendChat(baseUrl: string, text: string): Promise<ChatSendS
   }
   const reply = typeof o.reply === 'string' ? o.reply.trim() : '';
   if (!reply) throw new Error('dsh-pet: 对话回复非法');
-  return { ok: true, reply, ts: Number(o.ts) || 0 };
+  const image = typeof o.image === 'string' && o.image.trim() ? o.image.trim() : undefined;
+  return image ? { ok: true, reply, image, ts: Number(o.ts) || 0 } : { ok: true, reply, ts: Number(o.ts) || 0 };
 }
 
 /** 弹窗样式 —— 两端注入同一份（与菜单 MENU_CSS 同理；视觉对齐浏览器/桌面）。
@@ -102,8 +104,9 @@ export function mountChatDialog(opts: {
   baseUrl?: string;
   x: number;
   y: number;
-  /** 发送成功后的回复（弹窗此时已关闭）；调用方负责播动画 + 气泡展示 */
-  onReply?: (reply: string) => void;
+  /** 发送成功后的回复（弹窗此时已关闭）；调用方负责播动画 + 气泡展示。
+   *  image = 本次配图名称（无配图时 undefined）——与碎碎念同一展示契约 */
+  onReply?: (reply: string, image?: string) => void;
   onClose?: () => void;
   /** 弹窗允许占用的矩形（视口局部坐标）；缺省 = 整个视口 */
   clamp?: { x: number; y: number; w: number; h: number };
@@ -191,7 +194,7 @@ export function mountChatDialog(opts: {
       .then((state) => {
         if (state.ok) {
           close();
-          if (onReply) onReply(state.reply);
+          if (onReply) onReply(state.reply, state.image);
         } else {
           err.textContent = '对话失败：' + (state.message ?? state.reason);
           err.style.display = 'block';
