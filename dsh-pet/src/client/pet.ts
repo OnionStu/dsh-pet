@@ -1432,13 +1432,17 @@ export function makePetUI(rt: {
             : undefined;
           petBridge.sync = (list: Pet[]) => {
             // 设置页编辑的是 main 条目实例（裸实例，无条目级字段）：这里补吹 main 的
-            // 动画池/权重/周期（与 flattenConfigPets 同规格），再合并文件宠物
+            // 动画池/权重/周期/物理参数/工作状态文案（与 flattenConfigPets 同规格——漏吹会让
+            // RuntimePet 的必填 physics 落空，新增或恢复默认的宠物一拖就在 cfg.physics 上抛错），
+            // 再合并文件宠物
             const mc = mainConfRef.current;
             const filled: Pet[] = list.map((p) => ({
               ...p,
               animations: mc.animations as Animations,
               animationWeights: mc.animationWeights as Weights,
               eventsRefreshSec: mc.eventsRefreshSec as Record<string, number>,
+              physics: mc.physics as PhysicsParams,
+              workStatusTexts: mc.workStatusTexts as string[][],
               assetRoot: 'main',
               extra: false,
             }));
