@@ -891,10 +891,13 @@ export function apply(ctx: any): void {
     //     只查自己的目录，查不到即 404 显式报错——绝不回落别的素材
     //   - 不存在（**所有主配置宠物**：main 及用户添加的任意多只，共用全局动画池）：
     //     主素材链——用户 main-animation/<ext 子目录> 优先，其次包内 assets/<ext 子目录>
-    const extraAnimDir = join(userRoot, 'pet', petId + '-animation');
-    const file = existsSync(extraAnimDir)
-      ? resolveExisting(extraAnimDir, fileName)
-      : (resolveExisting(userRootFor(ext), fileName) ?? resolveExisting(assetRootFor(ext), fileName));
+    // extraAnimDir 必须先过 resolveAsset：petId 是解码后的 URL 段，Windows 上 %5C 解出的
+    // 反斜杠不会被 rest.split('/') 切开，直接 join 会让 `..\..\x` 逃出用户根读盘。
+    const extraAnimDir = resolveAsset(petConfigDir, petId + '-animation');
+    const file =
+      extraAnimDir !== undefined && existsSync(extraAnimDir)
+        ? resolveExisting(extraAnimDir, fileName)
+        : (resolveExisting(userRootFor(ext), fileName) ?? resolveExisting(assetRootFor(ext), fileName));
     if (file === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: asset not found' };
     return { kind: 'file', file, contentType: MIME[ext] ?? 'application/octet-stream' };
   };
