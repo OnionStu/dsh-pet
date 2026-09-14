@@ -256,7 +256,6 @@ export class HelperProcess {
   declare readonly logger: Logger;
   declare private child?: import('node:child_process').ChildProcess;
   declare private stopping: boolean;
-  declare private restartSuppressed: boolean;
   declare private restartTimer?: NodeJS.Timeout;
   /** 连续崩溃计数（稳定运行 ≥3 分钟清零；达上限触发熔断） */
   declare private restartFailures: number;
@@ -270,7 +269,6 @@ export class HelperProcess {
     this.logger = logger;
     this.child = undefined;
     this.stopping = false;
-    this.restartSuppressed = false;
     this.restartTimer = undefined;
     this.restartFailures = 0;
     this.lastStartAt = 0;
@@ -278,7 +276,7 @@ export class HelperProcess {
   }
 
   start(): import('node:child_process').ChildProcess | undefined {
-    if (this.child || this.stopping || this.restartSuppressed) return this.child;
+    if (this.child || this.stopping) return this.child;
     this.lastStartAt = Date.now();
     const helperPath = this.options.helperPath || defaultHelperMain;
     const launch = this.options.command
@@ -300,7 +298,7 @@ export class HelperProcess {
     child.once('exit', (code, signal) => {
       if (this.child !== child) return;
       this.child = undefined;
-      if (!this.stopping && !this.restartSuppressed) {
+      if (!this.stopping) {
         this.logger.warn?.(
           `dsh-pet desktop helper exited (code=${String(code)}, signal=${String(signal)}); restarting`,
         );
@@ -397,8 +395,8 @@ export class HelperProcess {
   }
 
   private scheduleRestart(): void {
-    if (this.restartTimer || this.stopping || this.restartSuppressed) return;
-    // ① 指数退避：750ms 起 2x 封顶 30s；② 熔断：连续崩溃 12 次（约 6 分钟）后停止重启。
+    if (this.restartTimer || this.stopping) return;
+    // ① 指数退避：750ms 起 2x 封顶 30s；② 熔断：连续崩溃 12 次（约 3 分钟）后停止重启。
     // 两个阈值都可配（DSH_PET_RESTART_BASE_MS / DSH_PET_RESTART_MAX_FAILURES），稳定运行 ≥3 分钟清零。
     // 纯逻辑（restartBackoffDelayMs / shouldCircuitBreak / helperRunIsStable）在 helper-process.test.ts 有独立用例。
     if (helperRunIsStable(Date.now() - this.lastStartAt)) {
@@ -414,7 +412,9 @@ export class HelperProcess {
       return;
     }
     const base = this.resolveRestartBaseMs();
-    const delay = restartBackoffDelayMs(this.restartFailures, base);
+    // 首次崩溃等 base（= 750ms 默认），与旧版固定首延和 restartBackoffDelayMs 的 0 起序列一致：
+    // 计数是"已经崩了几次"（1 起），延迟要按"第几次重试"（0 起）取，故减 1
+    const delay = restartBackoffDelayMs(this.restartFailures - 1, base);
     this.logger.warn?.(
       `dsh-pet desktop helper exited; restarting in ${Math.round(delay)}ms ` +
         `(attempt ${this.restartFailures}, consecutive-crash limit ${this.resolveMaxFailures()})`,
@@ -452,7 +452,7 @@ export function restartBackoffDelayMs(consecutiveFailures: number, baseMs = 750)
   return Math.min(raw, MAX);
 }
 
-/** 熔断判定：连续崩溃 ≥ limit（默认 12，按默认退避约 6 分钟）次后不再自动重启。 */
+/** 熔断判定：连续崩溃 ≥ limit（默认 12，按默认退避累计约 3 分钟）次后不再自动重启。 */
 export function shouldCircuitBreak(consecutiveFailures: number, limit = 12): boolean {
   return consecutiveFailures >= limit;
 }

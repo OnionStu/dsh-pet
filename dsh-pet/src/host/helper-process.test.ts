@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 
 import {
   HELPER_STABLE_MS,
+  HelperProcess,
   dshHomeDir,
   defaultElectronExe,
   hasGraphicalDisplay,
@@ -188,7 +189,7 @@ describe('restartBackoffDelayMs —— 指数退避（750ms 起，2x 封顶 30s�
   });
 });
 
-describe('shouldCircuitBreak —— 连续崩溃 12 次（约 6 分钟）后熔断', () => {
+describe('shouldCircuitBreak —— 连续崩溃 12 次（约 3 分钟）后熔断', () => {
   test('前 11 次不熔断，第 12 次起熔断', () => {
     assert.equal(shouldCircuitBreak(0), false);
     assert.equal(shouldCircuitBreak(10), false);
@@ -206,5 +207,63 @@ describe('helperRunIsStable —— 稳定运行 ≥3 分钟后计数清零', () 
   test('达到 3 分钟：稳定，应清零', () => {
     assert.equal(helperRunIsStable(HELPER_STABLE_MS), true);
     assert.equal(helperRunIsStable(10 * 60 * 1000), true);
+  });
+});
+
+describe('HelperProcess —— 退避/熔断的**接线**（纯函数之外，调用点本身）', () => {
+  const sleep = (ms: number) => new Promise((resolve2) => setTimeout(resolve2, ms));
+
+  /** 建一个「拉起即崩」的实例：测试进程里不能真 spawn（stdio 走 pipe），
+   *  于是把 start() 换成「置时间戳 → 立刻回到 scheduleRestart」，
+   *  等价于子进程 exit 后走的那条真实路径（计数、退避、熔断、日志全是真实代码）。 */
+  function makeCrashing(logs: string[]): HelperProcess {
+    const hp = new HelperProcess(
+      {},
+      {
+        warn: (m: unknown) => logs.push(String(m)),
+        error: (m: unknown) => logs.push(String(m)),
+      },
+    );
+    const internals = hp as unknown as { lastStartAt: number; scheduleRestart(): void; start(): void };
+    internals.start = () => {
+      internals.lastStartAt = Date.now(); // 每次都是新拉起且立刻崩 → 永远不算「稳定运行」
+      internals.scheduleRestart();
+    };
+    return hp;
+  }
+
+  /** 跑一轮崩溃循环，返回期间产生的日志；env 取值在 finally 里还原 */
+  async function runCrashLoop(env: Record<string, string>, windowMs: number): Promise<string[]> {
+    const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    for (const [k, v] of Object.entries(env)) process.env[k] = v;
+    const logs: string[] = [];
+    const hp = makeCrashing(logs);
+    try {
+      hp.start();
+      await sleep(windowMs);
+    } finally {
+      hp.stop('test-done');
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    return logs;
+  }
+
+  test('首次崩溃等待 base（默认 750ms），不是 2×base', async () => {
+    // 曾经是「先自增再算延迟」：计数 1 取 2^1 = 2×base，首延变成 1500ms，与注释/旧版固定 750ms 都不符
+    const logs = await runCrashLoop({ DSH_PET_RESTART_BASE_MS: '1' }, 20);
+    const first = logs.find((l) => l.includes('restarting in'));
+    assert.ok(first, '应有一条重启告警');
+    assert.match(first, /restarting in 1ms/);
+  });
+
+  test('DSH_PET_RESTART_MAX_FAILURES 真的接进判定：设 3 → 第 3 次就熔断', async () => {
+    // 曾经这个环境变量只出现在日志文案里，判定用的是 shouldCircuitBreak 的默认值 12
+    const logs = await runCrashLoop({ DSH_PET_RESTART_BASE_MS: '1', DSH_PET_RESTART_MAX_FAILURES: '3' }, 60);
+    const tripped = logs.find((l) => l.includes('circuit breaker tripped'));
+    assert.ok(tripped, '按用户设定的阈值应熔断');
+    assert.match(tripped, /crashed 3 consecutive times/);
   });
 });
