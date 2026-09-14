@@ -6,7 +6,8 @@
  *   （写用户层 main-config.json = 可编辑层，文件宠物永不回写）
  * - 数据入口：配置由 host readAllConfig 合并为**成品**（GET /dsh-pet-7340/config），
  *   设置页只读 main 条目（可编辑）+ 统计文件宠物条数，不做任何校验
- * - 即时生效：保存/恢复默认后调用 petBridge.sync 通知容器重新渲染，无需刷新页面
+ * - 即时生效：保存/恢复默认后用 host 返回的**成品聚合**调用 petBridge.reload，
+ *   容器走同一份 flattenConfigPets 重新渲染，无需刷新页面（设置页不自己拼任何条目级字段）
  *
  * 样式对齐官方设置页：max-width 720px、全走 --dsw-alias-* 语义 token（主题跟随）。
  */
@@ -18,15 +19,16 @@ import type * as ReactNS from 'react';
 import type { jsx } from 'react/jsx-runtime';
 
 /** 容器与设置页共享的桥（同一 bundle 单例）：
- * current=最新完整宠物列表（成品拍平，默认空）；sync=容器注册的重渲染回调（未注册时为无操作函数）；
- * template=main 条目的宠物[0]（「添加宠物」用它作为默认配置） */
+ * current=最新完整宠物列表（**成品拍平**，含条目级字段与文件宠物，默认空；容器是唯一写入方）；
+ * reload=容器注册的重载回调（未注册时为无操作函数）：传 host 保存接口返回的成品聚合即直接拍平，
+ *   缺省则由容器自行 GET /config；template=main 条目的宠物[0]（「添加宠物」用它作为默认配置） */
 export const petBridge: {
   current: Pet[];
-  sync: (pets: Pet[]) => void;
+  reload: (merged?: Record<string, Record<string, unknown>>) => void;
   template: Pet | undefined;
 } = {
   current: [],
-  sync: () => {},
+  reload: () => {},
   template: undefined,
 };
 
@@ -333,9 +335,9 @@ export function makePetConfigSection(rt: {
           }),
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
+        // host 的 PUT 响应体就是保存后的成品聚合：直接交给容器拍平（无第二份字段填充，也不再拉一次）
+        petBridge.reload((await res.json()) as Record<string, Record<string, unknown>>);
         setNotifyEnabled(v);
-        petBridge.current = pets;
-        petBridge.sync(pets);
         void reloadNotifications(); // 引擎重读开关：即时生效，无需刷新页面
         setMsg({ kind: 'ok', text: t('saved') });
       } catch {
@@ -417,8 +419,8 @@ export function makePetConfigSection(rt: {
           body: JSON.stringify(body),
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        petBridge.current = pets;
-        petBridge.sync(pets);
+        // 同上：PUT 响应即成品聚合，容器据此重新拍平（新增/删除宠物、改大小位置都走这条路）
+        petBridge.reload((await res.json()) as Record<string, Record<string, unknown>>);
         setMsg({ kind: 'ok', text: t('saved') });
       } catch {
         setMsg({ kind: 'err', text: t('loadError') });
@@ -433,14 +435,16 @@ export function makePetConfigSection(rt: {
       setBusy(true);
       setMsg({ kind: '', text: '' });
       try {
-        // 删除用户层 → 重新拉成品（此时 main 条目 = 内置默认宠物列表）
-        await fetch('/dsh-pet-7340/config', { method: 'DELETE' });
-        const merged = (await (await fetch('/dsh-pet-7340/config')).json()) as { main?: { pets?: Pet[] } } | null;
-        const defs = (merged?.main?.pets ?? []) as Pet[];
+        // 删除用户层：DELETE 的响应体同样是成品聚合（此时 main 条目 = 内置默认宠物列表），
+        // 与保存走同一条路——不再"删完再拉一次"，也就没有中间失败态
+        const res = await fetch('/dsh-pet-7340/config', { method: 'DELETE' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const merged = (await res.json()) as Record<string, Record<string, unknown>>;
+        const defs = (merged.main?.pets ?? []) as Pet[];
         setPets(defs.map((p) => ({ ...p, position: { ...p.position } })));
         setSelId(defs[0]?.id ?? '');
-        petBridge.current = defs;
-        petBridge.sync(defs);
+        // 同一份成品交给容器拍平：编辑列表（裸实例）与渲染列表（含条目级字段）都由成品派生
+        petBridge.reload(merged);
         setMsg({ kind: 'ok', text: t('saved') });
       } catch {
         setMsg({ kind: 'err', text: t('loadError') });

@@ -172,7 +172,7 @@ export function makePetUI(rt: {
     // 对话弹窗（与桌面共用 shared 组件）：当前挂载的 close() 句柄，卸载/重开前清理
     const chatRef = useRef<{ close: () => void } | null>(null);
 
-    // 配置变化即时跟随（容器重新合并 / 设置页保存后通过 petBridge.sync 触发）
+    // 配置变化即时跟随（容器重新合并 / 设置页保存后通过 petBridge.reload 触发）
     useEffect(() => {
       setSize(cfg.size);
       setCorner(cfg.position.corner);
@@ -1396,10 +1396,6 @@ export function makePetUI(rt: {
     // 共享碰撞站场（宠物间碰撞）：每只 PetCard 注册自己的槽位；飞行中的宠物在 startThrow
     // 每帧读数碰撞。纯 ref 同步，不触发 React 重渲染。
     const arenaRef = useRef<{ slots: Record<string, PetCollisionSlot> }>({ slots: {} });
-    // 文件宠物（非 main 条目的实例）：加载后填充；设置页 sync 过来的列表不含它们，这里统一合并回去
-    const extrasRef = useRef<Pet[]>([]);
-    // main 条目的条目级字段（设置页保存来的可编辑列表是裸实例，回填动画池/权重/周期用）
-    const mainConfRef = useRef<Record<string, unknown>>({});
     // 主条目刷新周期（余额轮询等全局节奏用；合并器已填内置默认）
     const mainRefreshRef = useRef<Record<string, number>>({});
     // 余额状态（容器统一拉取，PetCard 共享；balanceTick 每次成功拉取递增，驱动事件动画）
@@ -1413,52 +1409,55 @@ export function makePetUI(rt: {
 
     useEffect(() => {
       let alive = true;
+      /** 唯一填充点：host 成品聚合 → 渲染列表。初始加载与设置页保存/恢复默认后重载都走这里——
+       *  条目级字段（动画池/权重/刷新周期/物理参数/工作状态文案）只由 flattenConfigPets 吹入，
+       *  容器不再自己拼任何字段（曾经的第二份补吹实现漏过 physics，导致新增/恢复默认后拖不动）。 */
+      const applyMerged = (merged: Record<string, Record<string, unknown>>): void => {
+        const main = (merged as { main?: Record<string, unknown> } | null)?.main;
+        // 形状校验：host 版本不匹配 / 响应体异常时显式抛错（初始加载报错，重载保留当前列表），
+        // 绝不用空列表把已有宠物清空
+        if (typeof main !== 'object' || main === null) {
+          throw new Error('配置响应不是成品聚合（host 版本不匹配？）');
+        }
+        const flattened = flattenConfigPets(merged);
+        mainRefreshRef.current = (main.eventsRefreshSec as Record<string, number> | undefined) ?? {};
+        petBridge.current = flattened;
+        // 「添加宠物」模板 = main 条目 pets[0]（内置默认或用户覆盖后的主宠物）
+        petBridge.template = Array.isArray(main.pets) ? ((main.pets as Pet[])[0] ?? undefined) : undefined;
+        setPets(flattened);
+      };
+      /** 拉成品聚合：host readAllConfig 的输出（字段填满、绝对正确），客户端零校验零兜底 */
+      const loadMerged = async (): Promise<Record<string, Record<string, unknown>>> => {
+        const r = await fetch('/dsh-pet-7340/config');
+        if (!r.ok) throw new Error('config HTTP ' + r.status);
+        return (await r.json()) as Record<string, Record<string, unknown>>;
+      };
       (async () => {
         try {
-          // 唯一配置入口：host readAllConfig 的成品聚合（绝对正确、字段填满），一次拉取，零校验零兜底
-          const r = await fetch('/dsh-pet-7340/config');
-          if (!r.ok) throw new Error('config HTTP ' + r.status);
-          const merged = (await r.json()) as Record<string, Record<string, unknown>>;
-          const flattened = flattenConfigPets(merged);
+          const merged = await loadMerged();
           if (!alive) return;
-          mainConfRef.current = merged.main ?? {};
-          mainRefreshRef.current = (merged.main?.eventsRefreshSec as Record<string, number> | undefined) ?? {};
-          // 文件宠物单独留一份：设置页保存/恢复默认后自动合并回来
-          extrasRef.current = flattened.filter((p) => p.extra);
-          petBridge.current = flattened;
-          // 「添加宠物」模板 = main 条目 pets[0]（内置默认或用户覆盖后的主宠物）
-          petBridge.template = Array.isArray(merged.main?.pets)
-            ? ((merged.main.pets as Pet[])[0] ?? undefined)
-            : undefined;
-          petBridge.sync = (list: Pet[]) => {
-            // 设置页编辑的是 main 条目实例（裸实例，无条目级字段）：这里补吹 main 的
-            // 动画池/权重/周期/物理参数/工作状态文案（与 flattenConfigPets 同规格——漏吹会让
-            // RuntimePet 的必填 physics 落空，新增或恢复默认的宠物一拖就在 cfg.physics 上抛错），
-            // 再合并文件宠物
-            const mc = mainConfRef.current;
-            const filled: Pet[] = list.map((p) => ({
-              ...p,
-              animations: mc.animations as Animations,
-              animationWeights: mc.animationWeights as Weights,
-              eventsRefreshSec: mc.eventsRefreshSec as Record<string, number>,
-              physics: mc.physics as PhysicsParams,
-              workStatusTexts: mc.workStatusTexts as string[][],
-              assetRoot: 'main',
-              extra: false,
-            }));
-            const next = [...filled, ...extrasRef.current];
-            petBridge.current = next;
-            setPets(next);
-          };
-          setPets(flattened);
+          applyMerged(merged);
           setReady(true);
         } catch (e) {
           console.error('[dsh-pet] 配置加载失败', e); // 成品拉取失败：显式报错，不静默隐藏
         }
       })();
+      // 设置页保存/恢复默认后：host 已落盘，这里用权威成品重新拍平（传 merged 则直接用 PUT 的响应体，
+      // 不必再拉一次；缺省自行 GET——恢复默认等场景复用同一条路径）
+      petBridge.reload = (merged) => {
+        void (async () => {
+          try {
+            const next = merged ?? (await loadMerged());
+            if (!alive) return;
+            applyMerged(next);
+          } catch (e) {
+            console.error('[dsh-pet] 配置重载失败，保留当前渲染列表', e); // 显式报错，不清空已有宠物
+          }
+        })();
+      };
       return () => {
         alive = false;
-        petBridge.sync = () => {};
+        petBridge.reload = () => {};
       };
     }, []);
 

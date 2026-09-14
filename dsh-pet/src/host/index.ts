@@ -15,8 +15,10 @@
  * 路由：
  *   /dsh-pet-7340/config             → 合并后的**成品配置**（{ main:{...}, test1:{...}, ... }，
  *                                每条目字段已填满；浏览器/桌面/设置页的唯一配置入口）
- *                                GET 读取成品、PUT 保存用户层（白名单重建 main-config.json）、
- *                                DELETE 删除用户层（恢复内置默认）
+ *                                GET 读取成品；PUT 保存用户层（白名单重建 main-config.json）、
+ *                                DELETE 删除用户层（恢复内置默认）——两个写接口的**响应体都是
+ *                                保存后的成品聚合**，设置页即时生效直接拍平这份响应，
+ *                                客户端不再有第二份"补吹条目级字段"的实现
  *   /dsh-pet-7340/config/meta         → 配置文件与素材目录路径 + 全部存储位置清单
  *                                       （设置页「高级配置」「卸载与存储」展示用）
  *   /dsh-pet-7340/thumb/<素材根>/<动画名>.webm|.mov  → 素材按宠物归属（.mov 为 macOS 定制，扩展名取决于
@@ -641,7 +643,10 @@ export function apply(ctx: any): void {
           await mkdir(userRoot, { recursive: true });
           await writeFile(userConfigPath, JSON.stringify(clean, null, 2), 'utf8');
           syncDesktop(); // display 等可能变化：重解析桌面宠物并重启 Helper
-          return { kind: 'json', status: 200, obj: { ok: true } };
+          // 响应体 = 保存后的**成品聚合**（与 GET /config 同一份，字段已填满）：
+          // 设置页把它直接交给容器的 flattenConfigPets 拍平渲染——客户端的条目级字段
+          // （动画池/权重/物理参数/工作状态文案）只有这一处填充，不再有第二份补吹实现。
+          return { kind: 'json', status: 200, obj: readAllConfig(configPaths) };
         } catch {
           return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
         }
@@ -653,7 +658,7 @@ export function apply(ctx: any): void {
           /* 不存在也视为成功 */
         }
         syncDesktop(); // 恢复默认配置：重解析桌面宠物并重启 Helper
-        return { kind: 'json', status: 200, obj: { ok: true } };
+        return { kind: 'json', status: 200, obj: readAllConfig(configPaths) };
       }
       return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
     }
