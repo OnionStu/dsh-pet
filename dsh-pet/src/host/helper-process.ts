@@ -406,7 +406,7 @@ export class HelperProcess {
     } else {
       this.restartFailures += 1;
     }
-    if (shouldCircuitBreak(this.restartFailures)) {
+    if (shouldCircuitBreak(this.restartFailures, this.resolveMaxFailures())) {
       this.logger.error?.(
         `dsh-pet desktop helper crashed ${this.restartFailures} consecutive times; circuit breaker tripped, ` +
           `no more restarts. Fix the environment (e.g. DISPLAY/headless) or set DSH_PET_RESTART_MAX_FAILURES to raise the limit.`,
