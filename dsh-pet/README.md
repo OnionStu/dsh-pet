@@ -120,7 +120,7 @@ macOS 的 Safari/WKWebView 下透明动画需用 `.mov` 素材，三步：
 | 对话记忆（自动生成） | `$DSH_HOME/dsh-pet/memory.json`      | 对话历史（user/assistant 正文，**全存不删**；每次请求只取最近 `chatMemoryRounds` 轮）。删掉即清空记忆 |
 | 用户动画（可选）     | `$DSH_HOME/dsh-pet/main-animation/`  | 放入 `.webm`（VP9-Alpha）即可作为动画播放，**优先于包内素材**（放 `main-animation/webm/` 子目录）     |
 
-- 设置页底部会显示这些路径
+- 设置页底部「高级配置」显示这些路径；「卸载与存储」列出插件的全部存储位置与卸载命令
 - 自定义动画：把 `xxx.webm` 放进 `main-animation/webm/`，在动画池/分类里写 `"xxx"`，**刷新页面**即可（无需重启 DSH）
 - 格式：`.webm` 需 **VP9 Alpha** 编码（Chrome/Edge/Firefox），与包内素材同规范，普通编码会有黑底
 - 修改用户配置后同样**刷新页面**生效
@@ -194,6 +194,16 @@ $DSH_HOME/dsh-pet/pet/
 ```sh
 dsh plugin --profile web remove dsh-pet
 ```
+
+插件在本机落下的全部位置（设置页「卸载与存储」区块也列出这些，且路径按你的机器实时解析）：
+
+- `$DSH_HOME/dsh-pet/` —— 插件用户数据：自定义配置 `main-config.json`、对话记忆 `memory.json`、自定义动画素材 `main-animation/`、文件宠物 `pet/`
+- `$DSH_HOME/electron/` —— 桌面宠物用的 Electron 运行时（体积较大；删除后下次启用桌面模式会自动重新下载）
+- `%APPDATA%\dsh-pet-electron-helper\` —— 桌面宠物窗口缓存与主屏缩放缓存（macOS：`~/Library/Application Support/`；Linux：`$XDG_CONFIG_HOME` 或 `~/.config/`；可删，会自动重建）
+- `%LOCALAPPDATA%\electron\Cache\` —— Electron 安装包下载缓存（macOS：`~/Library/Caches/electron`；Linux：`$XDG_CACHE_HOME` 或 `~/.cache/`；可删，需要时会重新下载）
+- 插件本体 —— 由 DSH 管理，用上面的命令移除，不要手删
+
+删之前先退出 DSH（桌面宠物随之退出）。缓存类删了无影响；`$DSH_HOME/dsh-pet/` 删了会丢配置与对话记忆（想保留就先备份 `main-config.json`）。
 
 ## 🖥️ 运行效果
 

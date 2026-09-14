@@ -17,7 +17,8 @@
  *                                每条目字段已填满；浏览器/桌面/设置页的唯一配置入口）
  *                                GET 读取成品、PUT 保存用户层（白名单重建 main-config.json）、
  *                                DELETE 删除用户层（恢复内置默认）
- *   /dsh-pet-7340/config/meta         → 配置文件与素材目录路径（设置页展示用）
+ *   /dsh-pet-7340/config/meta         → 配置文件与素材目录路径 + 全部存储位置清单
+ *                                       （设置页「高级配置」「卸载与存储」展示用）
  *   /dsh-pet-7340/thumb/<素材根>/<动画名>.webm|.mov  → 素材按宠物归属（.mov 为 macOS 定制，扩展名取决于
  *       客户端播放常量 ANIMATION_EXT；本路由固定双扩展名兜底）：
  *       文件宠物 = $DSH_HOME/dsh-pet/pet/<素材根>-animation/（只查自己的，绝不回落）；
@@ -46,6 +47,7 @@
 import { createReadStream, existsSync } from 'node:fs';
 import { readFile, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
 import { join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
@@ -65,9 +67,11 @@ import {
   type WorkStatusTurnContext,
 } from './work-status';
 import { agentErrorFrame, reduceNotifyFrame, type HostNotifyFrame } from './notify-events';
+import { profileNameFrom, storageEntries } from './storage-paths';
 import {
   HelperProcess,
   defaultElectronExe,
+  electronLandingDir,
   ensureElectronDownload,
   hasGraphicalDisplay,
   resolveElectronPath,
@@ -179,7 +183,8 @@ function readBody(req: IncomingMessage): Promise<string> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- DSH 注入的 ctx（webServer/locale 等 service 无静态类型）
 export function apply(ctx: any): void {
   // 用户数据根：配置与用户素材统一收敛于此（扩展包按 <插件id> 各自建目录）
-  const userRoot = join(resolveDshHome(), 'dsh-pet');
+  const dshHome = resolveDshHome();
+  const userRoot = join(dshHome, 'dsh-pet');
   // 用户主配置（可编辑层）与文件宠物目录；配置读取/合并统一走 readAllConfig（./config）
   const userConfigPath = join(userRoot, 'main-config.json');
   const petConfigDir = join(userRoot, 'pet');
@@ -653,7 +658,7 @@ export function apply(ctx: any): void {
       return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
     }
 
-    // 配置文件路径（设置页「高级配置」展示用）
+    // 配置文件路径 + 存储位置清单（设置页「高级配置」与「卸载与存储」展示用）
     if (rest === 'config/meta') {
       return {
         kind: 'json',
@@ -662,6 +667,16 @@ export function apply(ctx: any): void {
           user: userConfigPath,
           default: join(PACKAGE_ROOT, 'assets', 'config.jsonc'),
           animations: thumbUserRoot,
+          // 全部落盘位置（本包用户数据 / Electron 运行时 / 桌面端缓存 / 下载缓存 / 插件本体）：
+          // 前两条直接传真实写入方的路径，不在这里重拼目录名
+          storage: storageEntries({
+            userDataRoot: userRoot,
+            electronDir: electronLandingDir(),
+            home: homedir(),
+            packageRoot: PACKAGE_ROOT,
+          }),
+          // profile 名（拼卸载命令 dsh plugin --profile <名> remove dsh-pet；反推不出时为空串）
+          profile: profileNameFrom(PACKAGE_ROOT) ?? '',
         },
       };
     }

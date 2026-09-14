@@ -96,7 +96,7 @@ export function resolveElectronPath(candidates: Array<string | undefined> = []):
   }
   // 只认自己的落地路径（ensureElectronDownload 下载解压到 $DSH_HOME/electron）；
   // 不再去 npm 全局目录 / Program Files / /usr/bin 等别处探测别人装的 Electron。
-  push(join(dshHomeDir(), 'electron', ELECTRON_REL));
+  push(defaultElectronExe());
   return list.find((value) => existsSync(value));
 }
 
@@ -142,9 +142,21 @@ const ELECTRON_REL =
       ? join('Electron.app', 'Contents', 'MacOS', 'Electron')
       : 'electron';
 
+/**
+ * Electron 运行时落地目录（$DSH_HOME/electron）—— 下载解压的目标，
+ * 也是设置页「卸载与存储」里让用户清理的那个目录。
+ *
+ * 唯一定义处：解析（resolveElectronPath / defaultElectronExe）与下载
+ * （ensureElectronDownload）全部走这里，避免同一个目录字面量在多个模块各写一遍，
+ * 改了一处而另一处没改（设置页就会显示一个永远不存在的路径）。
+ */
+export function electronLandingDir(): string {
+  return join(dshHomeDir(), 'electron');
+}
+
 /** Electron 落地路径：$DSH_HOME/electron/<按平台的可执行文件>。 */
 export function defaultElectronExe(): string {
-  return join(dshHomeDir(), 'electron', ELECTRON_REL);
+  return join(electronLandingDir(), ELECTRON_REL);
 }
 
 export interface EnsureElectronOptions {
@@ -166,8 +178,8 @@ export async function ensureElectronDownload(options: EnsureElectronOptions = {}
   const version = options.version || process.env.DSH_PET_ELECTRON_VERSION || '43.3.0';
   const mirror = options.mirror || process.env.DSH_PET_ELECTRON_MIRROR || 'https://npmmirror.com/mirrors/electron/';
   const timeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
-  const targetDir = join(dshHomeDir(), 'electron');
-  const exe = join(targetDir, ELECTRON_REL);
+  const targetDir = electronLandingDir();
+  const exe = defaultElectronExe();
   if (existsSync(exe)) return exe;
 
   // 下载日志用 console 直出（ctx.logger 在部分宿主不映射到终端，排障时看不到）。

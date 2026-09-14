@@ -98,6 +98,21 @@ export const zh = {
   notifyDenyRejected: '你在权限询问弹窗中选择了「阻止」。',
   notifyDenyError: '申请权限时出错',
   notifyGuide: '引导：点击地址栏左侧 🔒/ⓘ →「网站设置」→「通知」→ 改为「允许」，刷新页面后重试。',
+  storageTitle: '卸载与存储',
+  storageHint: '插件在本机落下的全部位置。删缓存不影响使用（会自动重下/重建）；删「插件用户数据」会丢配置与对话记忆。',
+  'storage.userData':
+    '插件用户数据：自定义配置 main-config.json、对话记忆 memory.json、自定义动画素材 main-animation/、文件宠物 pet/',
+  'storage.electron': '桌面宠物用的 Electron 运行时（体积较大；删除后下次启用桌面模式会自动重新下载）',
+  'storage.desktopCache': '桌面宠物窗口的缓存与主屏缩放缓存（可删，会自动重建）',
+  'storage.electronCache': 'Electron 安装包下载缓存（可删，需要时会重新下载）',
+  'storage.package': '插件本体（由 DSH 管理，用下面的卸载命令移除，不要手删）',
+  storageMissing: '（尚未创建）',
+  uninstallTitle: '卸载方法',
+  uninstallStep1: '1. 先退出 DSH（桌面宠物随之退出）；不要在桌宠运行时删除上面的文件。',
+  uninstallStep2: '2. 卸载插件本体（终端执行，会同时从 profile 的 bundle 层移除）：',
+  uninstallStep3:
+    '3. 按需删除上面的位置：缓存类删了无影响；「插件用户数据」删了会丢配置与对话记忆（想保留就先备份其中的 main-config.json）。',
+  uninstallCmd: 'dsh plugin --profile {profile} remove dsh-pet',
 };
 
 export const en = {
@@ -171,6 +186,25 @@ export const en = {
   notifyDenyError: 'Failed to request permission',
   notifyGuide:
     'Guide: click the 🔒/ⓘ icon next to the address bar → Site settings → Notifications → set to "Allow", then refresh and retry.',
+  storageTitle: 'Uninstall & storage',
+  storageHint:
+    'Every location this plugin writes to. Deleting cache folders is harmless (they re-download / rebuild); deleting "plugin user data" loses your config and chat memory.',
+  'storage.userData':
+    'Plugin user data: custom config main-config.json, chat memory memory.json, custom animation assets main-animation/, file pets pet/',
+  'storage.electron':
+    'Electron runtime used by the desktop pet (large; re-downloaded automatically the next time desktop mode starts)',
+  'storage.desktopCache':
+    'Desktop pet window cache and primary-monitor scale cache (safe to delete, rebuilt automatically)',
+  'storage.electronCache': 'Electron installer download cache (safe to delete, re-downloaded when needed)',
+  'storage.package': 'The plugin itself (managed by DSH — remove it with the command below instead of deleting it)',
+  storageMissing: ' (not created yet)',
+  uninstallTitle: 'How to uninstall',
+  uninstallStep1:
+    '1. Quit DSH first (the desktop pet exits with it); do not delete these files while the pet is running.',
+  uninstallStep2: '2. Remove the plugin itself (run in a terminal; this also drops it from the profile bundle layer):',
+  uninstallStep3:
+    '3. Delete the locations above as needed: cache folders are harmless; deleting "plugin user data" loses your config and chat memory (back up main-config.json first if you want to keep it).',
+  uninstallCmd: 'dsh plugin --profile {profile} remove dsh-pet',
 };
 
 /**
@@ -214,6 +248,9 @@ export function makePetConfigSection(rt: {
     outline: 'none',
   } as CSSProperties;
 
+  /** 等宽字体栈（路径与命令展示用；不引外部字体，走系统栈，避免多拉一份资源） */
+  const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace';
+
   /** 生成一个未占用的宠物 id（pet-2、pet-3…） */
   const nextId = (list: Pet[]): string => {
     let n = 2;
@@ -233,8 +270,16 @@ export function makePetConfigSection(rt: {
     const [msg, setMsg] = useState<{ kind: 'ok' | 'err' | ''; text: string }>({ kind: '', text: '' });
     // 确认弹窗（仿官方弹窗：遮罩 + 居中卡片 + 双按钮）
     const [confirm, setConfirm] = useState<null | 'remove' | 'reset'>(null);
-    // 配置文件地址（「高级配置」区块；读取失败仅缺省不显示，不影响表单）
-    const [paths, setPaths] = useState<null | { user: string; default: string; animations: string }>(null);
+    // 配置文件地址与存储位置清单（「高级配置」「卸载与存储」区块；读取失败仅缺省不显示，不影响表单）
+    const [paths, setPaths] = useState<null | {
+      user: string;
+      default: string;
+      animations: string;
+      /** 插件落盘的全部位置（路径 + 是否已存在），host 按平台推导 */
+      storage?: Array<{ key: string; path: string; exists?: boolean }>;
+      /** 当前 profile 名（拼卸载命令用；反推不出时为空串） */
+      profile?: string;
+    }>(null);
     useEffect(() => {
       fetch('/dsh-pet-7340/config/meta')
         .then((r) => (r.ok ? r.json() : null))
@@ -942,6 +987,74 @@ export function makePetConfigSection(rt: {
                   style: { fontSize: '12px', lineHeight: '18px', wordBreak: 'break-all' },
                   children: t('animationDir') + '：' + paths.animations,
                 }),
+              ],
+            })
+          : null,
+
+        // 卸载与存储：先列出插件落盘的全部位置（路径在前、作用在后），再给出卸载方法
+        paths && paths.storage && paths.storage.length > 0
+          ? h('div', {
+              style: {
+                marginTop: '12px',
+                padding: '10px 14px',
+                border: '1px solid var(--dsw-alias-border-l2)',
+                borderRadius: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+                fontSize: '12px',
+                color: 'var(--dsw-alias-label-secondary)',
+              },
+              children: [
+                h('div', {
+                  style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', fontWeight: 500 },
+                  children: t('storageTitle'),
+                }),
+                h('div', { style: { fontSize: '12px', lineHeight: '20px' }, children: t('storageHint') }),
+                // 存储位置清单：每条都是「路径（等宽、可选中复制）→ 作用」
+                ...paths.storage.map((s) =>
+                  h('div', {
+                    key: s.key,
+                    style: { fontSize: '12px', lineHeight: '18px', wordBreak: 'break-all', userSelect: 'text' },
+                    children: [
+                      h('span', {
+                        style: { color: 'var(--dsw-alias-label-primary)', fontFamily: MONO },
+                        children: s.path,
+                      }),
+                      // 尚未产生的目录（如从未启用桌面模式的 Electron）标一下，避免用户去找不存在的文件夹
+                      h('span', {
+                        children: ' — ' + t('storage.' + s.key) + (s.exists === false ? t('storageMissing') : ''),
+                      }),
+                    ],
+                  }),
+                ),
+                h('div', {
+                  style: {
+                    marginTop: '4px',
+                    fontSize: '12px',
+                    color: 'var(--dsw-alias-label-primary)',
+                    fontWeight: 500,
+                  },
+                  children: t('uninstallTitle'),
+                }),
+                h('div', { style: { fontSize: '12px', lineHeight: '20px' }, children: t('uninstallStep1') }),
+                h('div', { style: { fontSize: '12px', lineHeight: '20px' }, children: t('uninstallStep2') }),
+                h('div', {
+                  style: {
+                    fontFamily: MONO,
+                    fontSize: '12px',
+                    lineHeight: '18px',
+                    wordBreak: 'break-all',
+                    userSelect: 'text',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--dsw-alias-border-l2)',
+                    background: 'var(--dsw-alias-interactive-bg-active)',
+                    color: 'var(--dsw-alias-label-primary)',
+                  },
+                  children: t('uninstallCmd').replace('{profile}', paths.profile || '<profile>'),
+                }),
+                h('div', { style: { fontSize: '12px', lineHeight: '20px' }, children: t('uninstallStep3') }),
               ],
             })
           : null,
