@@ -36,9 +36,10 @@ const CORNER_SET: ReadonlySet<string> = new Set(CORNERS);
 const PET_DISPLAYS = ['web', 'desktop', 'both', 'none'] as const;
 const PET_DISPLAY_SET: ReadonlySet<string> = new Set(PET_DISPLAYS);
 
-/** id 禁用的字符（Windows 文件名保留符 + 控制字符，防配置值逃逸文件路径） */
+/** id 禁用的字符（Windows 文件名保留符 + 控制字符，防配置值逃逸文件路径）。
+ *  同时被 thumb 路由的 petId 校验复用：那里同样是"标识符不得当路径片段"。 */
 // eslint-disable-next-line no-control-regex
-const ID_FORBIDDEN = /[\\/:\x00-\x1f]/;
+export const ID_FORBIDDEN = /[\\/:\x00-\x1f]/;
 
 /** 已告警过的 文件:字段（进程内去重：同一问题只告警一次，避免每请求刷屏；重启重置） */
 const warnedKeys = new Set<string>();

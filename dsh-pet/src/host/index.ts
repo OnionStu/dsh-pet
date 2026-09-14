@@ -25,6 +25,7 @@
  *       客户端播放常量 ANIMATION_EXT；本路由固定双扩展名兜底）：
  *       文件宠物 = $DSH_HOME/dsh-pet/pet/<素材根>-animation/（只查自己的，绝不回落）；
  *       主宠物   = $DSH_HOME/dsh-pet/main-animation/<webm|mov>（用户目录，优先）→ 包内 assets/<webm|mov>
+ *       <素材根> 是**标识符**（pet/ 下文件名前缀），含分隔符/保留字符即 400（见 ID_FORBIDDEN）
  *   /dsh-pet-7340/whisper|whisper/trigger → 碎碎念周期/手动生成（按宠物独立，人设读成品）
  *   /dsh-pet-7340/chat                → 对话与记忆（GET 最近窗口 / POST 对话并写 memory.json）
  *   /dsh-pet-7340/broadcast            → /chat 命令触发的气泡广播（两端 1s 轻轮询）
@@ -58,7 +59,14 @@ import { queryBalance } from './balance';
 import { generateWhisper } from './whisper';
 import { generateChat, type ChatMemoryMessage } from './chat';
 import { pickMeme, readMemePool } from './memes';
-import { findPetInstance, flattenPetList, readAllConfig, saveUserConfig, type ConfigPaths } from './config';
+import {
+  findPetInstance,
+  flattenPetList,
+  ID_FORBIDDEN,
+  readAllConfig,
+  saveUserConfig,
+  type ConfigPaths,
+} from './config';
 import {
   GOAL_UPDATE_TOOL,
   reduceWorkStatus,
@@ -885,6 +893,13 @@ export function apply(ctx: any): void {
     const [petId, ...nameParts] = restParts;
     if (!petId || nameParts.length === 0) {
       return { kind: 'text', status: 400, body: 'dsh-pet: expected /dsh-pet-7340/thumb/<petId>/<file>' };
+    }
+    // petId 是**标识符**（= pet/<名>-animation/ 的 <名>，来源是 pet/ 下的文件名前缀），不是路径片段：
+    // 含分隔符/保留字符即显式 400，早于任何路径拼接判定。合法名（含中文）照常——
+    // 用非法字符类而不是 ASCII 白名单。非法输入不再静默回落到主素材池（攻击尝试与"没有独立素材"可区分），
+    // 也给下面的 resolveAsset 之外再留一道结构性防线。
+    if (ID_FORBIDDEN.test(petId)) {
+      return { kind: 'text', status: 400, body: 'dsh-pet: invalid pet id' };
     }
     const fileName = nameParts.join('/');
     const ext = fileName.slice(fileName.lastIndexOf('.')).toLowerCase();
