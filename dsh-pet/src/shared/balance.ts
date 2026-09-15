@@ -262,11 +262,37 @@ export type BalanceBubbleRow =
   | { role: 'error'; text: string }
   | { role: 'tier'; tier: PricingTier; text: string };
 
+/** 不可用状态的气泡行（显式说明原因，绝不伪造数字）：
+ *  - unsupported：服务商未登记查询接口（配置事实，不是故障）→ 报出 provider id，便于自查"当前到底是谁"
+ *  - credential-missing：缺凭证 → 次要行放 host 报的凭证名（不含 message 时不留空行）
+ *  - fetch-error：抓取失败 → 次要行放底层错误
+ * 次要行为空的会被剔除：空 div 在气泡里会白占一行高度。 */
+function unavailableRows(state: BalanceUnavailable): BalanceBubbleRow[] {
+  const rows: BalanceBubbleRow[] =
+    state.reason === 'unsupported'
+      ? [
+          { role: 'error', text: '当前服务商暂不支持余额查询' },
+          { role: 'sub', text: '当前服务商：' + state.provider },
+        ]
+      : state.reason === 'credential-missing'
+        ? [
+            // host 的 message 本身已带「缺少凭证 X」前缀：这里只作次要行原样展示，不再加前缀
+            // （曾经的「缺少凭证：缺少凭证 X」双重前缀）
+            { role: 'error', text: '缺少余额查询凭证' },
+            { role: 'sub', text: state.message ?? '' },
+          ]
+        : [
+            { role: 'error', text: '余额查询失败' },
+            { role: 'sub', text: state.message ?? '' },
+          ];
+  return rows.filter((r) => r.text !== '');
+}
+
 /**
  * 把 BalanceState 渲染成气泡行数据（纯函数，不碰 DOM/React）：
  * - opencode：两行 —— 「5h/周/月」额度已用 N% + 重置倒计时
  * - deepseek：一行 —— 余额（峰/谷）¥x.xx（峰红/谷绿由 role:'tier' 表达）
- * - 无效：显式展示不可用原因，绝不伪造数字
+ * - 无效：显式展示不可用原因（见 unavailableRows），绝不伪造数字
  */
 export function balanceBubbleView(state: BalanceState): BalanceBubbleRow[] {
   if (state.ok) {
@@ -289,11 +315,29 @@ export function balanceBubbleView(state: BalanceState): BalanceBubbleRow[] {
       { role: 'label', text: '）¥' + (state.total ?? '-') },
     ];
   }
-  const msg =
-    state.reason === 'unsupported'
-      ? '当前服务商暂不支持余额查询'
-      : state.reason === 'credential-missing'
-        ? '缺少凭证：' + (state.message ?? '')
-        : '余额查询失败';
-  return [{ role: 'error', text: msg }];
+  return unavailableRows(state);
+}
+
+/** 非 ok 状态「弹不弹文字说明气泡」的判定结果 */
+export interface BalanceNoticeDecision {
+  /** true = 本次应弹气泡（文字说明）；false = 静默（同一原因已提示过，且非显式请求） */
+  show: boolean;
+  /** 本次提示的原因标识（形如 `unsupported:commandcode`；ok 状态为 null）：调用方存下，供下次比较 */
+  key: string | null;
+}
+
+/**
+ * 余额不可用时是否弹气泡（浏览器 overlay 与桌面外壳共用同一份判定——两端各写一份必然漂移）：
+ * - 显式请求（`/balance` 命令、桌面「查看余额」菜单）：一律弹——用户问了就该有答复，包括"不支持"这件事；
+ * - 自动轮询：只在原因（含服务商）**变化**时弹一次（首次检测到也算变化），避免每 30 分钟反复刷同一句话。
+ * 判定纯粹基于传入的 lastKey，不持有状态；调用方负责保存返回值里的 key。
+ */
+export function decideBalanceNotice(
+  state: BalanceState,
+  lastKey: string | null,
+  explicit: boolean,
+): BalanceNoticeDecision {
+  if (state.ok) return { show: false, key: null };
+  const key = state.reason + ':' + state.provider;
+  return { show: explicit || key !== lastKey, key };
 }

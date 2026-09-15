@@ -15,7 +15,13 @@ import {
 } from '../shared/pickers';
 import { planMove } from '../shared/motion';
 import { flattenConfigPets, isWebVisible } from '../shared/config';
-import { balanceEventIndex, balancePercent, fetchBalanceState, type BalanceState } from '../shared/balance';
+import {
+  balanceEventIndex,
+  balancePercent,
+  decideBalanceNotice,
+  fetchBalanceState,
+  type BalanceState,
+} from '../shared/balance';
 import { fetchWhisperState, fetchWhisperTrigger } from '../shared/whisper';
 import { WORK_STATUS_INDEX, fetchWorkStatus, type WorkStatusSnapshot } from '../shared/work-status';
 import { makeBalanceBubble, makeWhisperBubble } from './bubble';
@@ -123,6 +129,7 @@ export function makePetUI(rt: {
     cfg,
     balance,
     balanceTick,
+    balanceNoticeTick,
     workStatus,
     workStatusTick,
     arena,
@@ -130,6 +137,7 @@ export function makePetUI(rt: {
     cfg: RuntimePet;
     balance: BalanceState | null;
     balanceTick: number;
+    balanceNoticeTick: number;
     workStatus: WorkStatusSnapshot | null;
     workStatusTick: number;
     arena: ReactNS.MutableRefObject<{ slots: Record<string, PetCollisionSlot> }>;
@@ -363,6 +371,21 @@ export function makePetUI(rt: {
       setAnim(name);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [balanceTick]);
+
+    // 余额不可用（服务商未登记 / 缺凭证 / 抓取失败）：容器判定该提示时递增 balanceNoticeTick
+    // → 本宠物只弹「文字说明」气泡，不播档位动画（非 ok 没有百分比语义，档位动画无从映射）。
+    // 门控与成功路径一致（仅 balanceEnabled 的宠物提示）；显隐/定时与成功路径同一套（10s 自动消失）。
+    const prevNoticeRef = useRef(0);
+    useEffect(() => {
+      if (!cfg.balanceEnabled) return; // 未启用余额功能 -> 该宠物对余额事件完全免疫
+      if (balanceNoticeTick === 0 || balanceNoticeTick === prevNoticeRef.current) return;
+      prevNoticeRef.current = balanceNoticeTick;
+      if (!balance || balance.ok) return;
+      setBubbleOn(true);
+      if (bubbleTimerRef.current !== null) window.clearTimeout(bubbleTimerRef.current);
+      bubbleTimerRef.current = window.setTimeout(() => setBubbleOn(false), BUBBLE_DURATION_MS);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [balanceNoticeTick]);
 
     // 工作状态联动：容器轮询 /work-status 递增 workStatusTick → 本宠物（workStatusEnabled 开启时）
     // 按 events.workStatus 档位播动画 + 弹文本气泡。
@@ -1366,8 +1389,10 @@ export function makePetUI(rt: {
         rootStyle,
       ),
       children: [
-        // 余额气泡（仅启用余额功能的宠物渲染；显示与否由 bubbleOn 控制）
-        balance && balance.ok && cfg.balanceEnabled ? h(BalanceBubble, { state: balance, on: bubbleOn }) : null,
+        // 余额气泡（仅启用余额功能的宠物渲染；显示与否由 bubbleOn 控制）。
+        // 注意：不可用状态（不支持/缺凭证/失败）**同样渲染**——它是文字说明气泡的唯一展示通道；
+        // 这里若再要求 balance.ok，未登记余额接口的服务商就完全没有任何反馈（本改动的起因）。
+        balance && cfg.balanceEnabled ? h(BalanceBubble, { state: balance, on: bubbleOn }) : null,
         // 碎碎念/对话气泡：**不受 whisperEnabled 限制**（该字段只关自动周期轮询的触发，
         // 见上头 useEffect 的 319 行门控）；whisperText 只由 triggerWhisper 设置——
         // 自动轮询被门控后不会触发，所以这里任何说话气泡（碎碎念/对话回复）都照常渲染。
@@ -1398,9 +1423,31 @@ export function makePetUI(rt: {
     const arenaRef = useRef<{ slots: Record<string, PetCollisionSlot> }>({ slots: {} });
     // 主条目刷新周期（余额轮询等全局节奏用；合并器已填内置默认）
     const mainRefreshRef = useRef<Record<string, number>>({});
-    // 余额状态（容器统一拉取，PetCard 共享；balanceTick 每次成功拉取递增，驱动事件动画）
+    // 余额状态（容器统一拉取，PetCard 共享；balanceTick 每次成功拉取递增，驱动事件动画；
+    // balanceNoticeTick 每次「该提示不可用原因」递增，驱动文字说明气泡）
     const [balance, setBalance] = useState<BalanceState | null>(null);
     const [balanceTick, setBalanceTick] = useState(0);
+    const [balanceNoticeTick, setBalanceNoticeTick] = useState(0);
+    // 上次已提示的不可用原因（reason:provider）：自动轮询只在原因变化时再弹（判定在 src/shared，两端同一份）
+    const noticeKeyRef = useRef<string | null>(null);
+    // 余额结果 → 状态与气泡（周期轮询与手动触发**共用这一条路径**，避免各写一份后漂移）。
+    // 存 ref 而非 useCallback：两个 effect 的依赖数组保持 [ready, anyBalanceEnabled] 不变，
+    // 同时规避引用每次渲染都变化导致的重复建 effect（本文件已有的 ref 同步写法）。
+    const applyBalanceRef = useRef<(state: BalanceState, explicit: boolean) => void>(() => {});
+    applyBalanceRef.current = (state, explicit) => {
+      setBalance(state);
+      if (state.ok) {
+        setBalanceTick((t) => t + 1); // 成功：播档位动画 + 弹余额气泡
+        return;
+      }
+      const { show, key } = decideBalanceNotice(state, noticeKeyRef.current, explicit);
+      noticeKeyRef.current = key;
+      if (show) setBalanceNoticeTick((t) => t + 1); // 弹文字说明气泡（不播动画）
+      // 未登记服务商是配置事实（已由气泡说明），不再刷 console；其余原因照旧显式报错，绝不伪造余额
+      if (state.reason !== 'unsupported') {
+        console.error('[dsh-pet] 余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
+      }
+    };
     // 工作状态：容器统一轮询 /work-status（任一宠物启用才启动），快照 + tick 递增驱动各宠物播档位动画
     const [workStatus, setWorkStatus] = useState<WorkStatusSnapshot | null>(null);
     const [workStatusTick, setWorkStatusTick] = useState(0);
@@ -1469,7 +1516,7 @@ export function makePetUI(rt: {
     const anyWorkStatusEnabled = visiblePets.some((p) => p.workStatusEnabled);
 
     // 余额轮询：配置就绪（ready）且至少一只宠物启用余额后启动拉取一次，之后按 eventsRefreshSec.balance（秒）周期刷新；
-    // 成功递增 balanceTick 触发事件动画；失败/不支持均不触发动画（错误显式 console.error，绝不显示伪造余额）
+    // 成功递增 balanceTick 触发事件动画；不可用状态按 decideBalanceNotice 判定是否弹文字说明气泡（自动轮询仅在原因变化时弹一次）
     useEffect(() => {
       if (!ready || !anyBalanceEnabled) return; // 未就绪 / 全宠物未启用余额：不启动轮询
       let alive = true;
@@ -1477,13 +1524,7 @@ export function makePetUI(rt: {
         try {
           const state = await fetchBalanceState();
           if (!alive) return;
-          setBalance(state);
-          if (state.ok) setBalanceTick((t) => t + 1);
-          else if (state.reason === 'unsupported') {
-            /* 无匹配服务商：按设计不显示、不播动画 */
-          } else {
-            console.error('[dsh-pet] 余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
-          }
+          applyBalanceRef.current(state, false);
         } catch (e) {
           if (alive) console.error('[dsh-pet] 余额拉取异常', e);
         }
@@ -1497,7 +1538,7 @@ export function makePetUI(rt: {
       };
     }, [ready, anyBalanceEnabled]);
     // 手动 /balance 触发：1s 轻量轮询触发计数（host 端点响应头已禁止缓存），
-    // 计数变化且余额启用时立即刷新余额并递增 balanceTick（与周期轮询同一触发路径）
+    // 计数变化且余额启用时立即刷新余额（与周期轮询共用 applyBalanceRef；explicit=true：不可用也必弹文字说明）
     useEffect(() => {
       if (!ready || !anyBalanceEnabled) return;
       let alive = true;
@@ -1517,13 +1558,7 @@ export function makePetUI(rt: {
           prev = count;
           const state = await fetchBalanceState();
           if (!alive) return;
-          setBalance(state);
-          if (state.ok) setBalanceTick((t) => t + 1);
-          else {
-            console.error(
-              '[dsh-pet] 手动触发余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''),
-            );
-          }
+          applyBalanceRef.current(state, true); // 显式请求（/balance）：不可用也必弹文字说明
         } catch {
           /* 轻量轮询失败静默：下一周期再试 */
         }
@@ -1569,6 +1604,7 @@ export function makePetUI(rt: {
             cfg: p as RuntimePet,
             balance,
             balanceTick,
+            balanceNoticeTick,
             workStatus,
             workStatusTick,
             arena: arenaRef,

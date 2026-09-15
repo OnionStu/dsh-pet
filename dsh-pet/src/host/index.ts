@@ -1053,15 +1053,16 @@ export function apply(ctx: any): void {
     };
   }, 'dsh-pet: notify frames');
 
-  // /balance 斜杠命令：递增触发计数 → 浏览器/桌面检测到变化后立即刷新余额并播动画（不进模型历史）
+  // /balance 斜杠命令：递增触发计数 → 浏览器/桌面检测到变化后立即刷新余额
+  // （成功播档位动画 + 余额气泡；服务商不支持/缺凭证/抓取失败则弹文字说明气泡，绝不静默）
   ctx.effect(
     () =>
       ctx.commands.register({
         name: 'balance',
-        description: '手动触发桌宠余额动画（立即显示余额气泡）',
+        description: '手动触发桌宠余额显示（立即弹出余额气泡）',
         handler: () => {
           balanceTriggerCount += 1;
-          return { kind: 'success', text: '已触发桌宠余额动画' };
+          return { kind: 'success', text: '已触发桌宠余额显示' };
         },
       }),
     'dsh-pet: /balance command',

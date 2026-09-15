@@ -88,6 +88,7 @@ class PetSprite {
     this.bubbleOn = false;
     this.bubbleTimer = null;
     this.balanceView = null;
+    this.balanceWrap = false; // true = 当前余额气泡是不可用的「文字说明」（多行，需换行变体）
     this.prevTick = 0;
     // 碎碎念（每只独立：自己轮询 /whisper?pet=<id>、自己的文本/配图与触发）
     this.whisperOn = false;
@@ -1057,9 +1058,13 @@ class PetSprite {
         if (state.ok) {
           this.showBalanceNow(state);
         } else {
-          console.error(
-            '[dsh-pet] 菜单查看余额失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''),
-          );
+          // 菜单是显式请求：一律弹文字说明，不做「原因变化」去重——用户每次点都该有答复
+          this.showBalanceNotice(state);
+          if (state.reason !== 'unsupported') {
+            console.error(
+              '[dsh-pet] 菜单查看余额失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''),
+            );
+          }
         }
       })
       .catch((e) => {
@@ -1134,7 +1139,11 @@ class PetSprite {
     // 配图标记交给 CSS：带图时取消 min-width（样式在 shared 的 MEME_BUBBLE_CSS，两端同一份）。
     // 图片 URL 与视频同规则：传 BASE 前缀（桌面是 file:// 页面，必须绝对地址）
     const whisperImg = this.whisperOn ? S.createMemeImage(this.whisperImage, BASE) : null;
-    this.bubble.classList.toggle('is-whisper', this.workOn || (this.whisperOn && !!this.whisperView));
+    this.bubble.classList.toggle(
+      'is-whisper',
+      // 余额「文字说明」（不可用状态）同样要换行变体：默认 nowrap 会把长文案顶出宠物宽度
+      this.workOn || (this.whisperOn && !!this.whisperView) || (this.bubbleOn && this.balanceWrap),
+    );
     this.bubble.classList.toggle(S.MEME_BUBBLE_CLASS, !!whisperImg);
     if (this.workOn) {
       // 工作状态气泡：workOn 期间占位（文本缺失时隐藏，绝不让更弱的碎碎念/余额气泡反超）

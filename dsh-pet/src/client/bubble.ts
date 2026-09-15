@@ -102,8 +102,11 @@ export function makeBalanceBubble(rt: { h: typeof jsx }): (props: { state: Balan
 
   return function BalanceBubble({ state, on }: { state: BalanceState; on: boolean }) {
     const rows = balanceBubbleView(state);
+    // 不可用状态（不支持/缺凭证/抓取失败）是**多行文字说明**：套用碎碎念的换行变体
+    // （余额气泡默认 white-space:nowrap，长文案会直接顶出宠物宽度）
+    const wrap = state.ok ? '' : ' dsh-pet-whisper';
     return h('div', {
-      className: 'dsh-pet-bubble' + (on ? ' is-on' : ''),
+      className: 'dsh-pet-bubble' + wrap + (on ? ' is-on' : ''),
       children: rowsToNodes(h, rows),
     });
   };

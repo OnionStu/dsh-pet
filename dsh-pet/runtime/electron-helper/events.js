@@ -90,6 +90,23 @@ PetSprite.prototype.onBalanceTick = function onBalanceTick(state, tick) {
   this.showBalanceNow(state);
 };
 
+// 余额不可用（服务商未登记 / 缺凭证 / 抓取失败）：只弹**文字说明**气泡，不播档位动画
+// （非 ok 没有百分比语义，档位动画无从映射）。显隐/定时与成功路径同一套（10s 自动消失）；
+// 不 stopMove——本次没有动画要抢前台，宠物没必要停下漫游。
+PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state) {
+  if (!this.pet.balanceEnabled) return; // 门控与成功路径一致（未启用余额的宠物完全免疫）
+  if (!state || state.ok) return;
+  this.bubbleOn = true;
+  this.balanceWrap = true; // 文字说明可能多行：renderBubble 据此套用换行变体（默认 nowrap 会顶出宠物宽度）
+  this.balanceView = S.balanceBubbleView(state);
+  this.renderBubble();
+  if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
+  this.bubbleTimer = window.setTimeout(() => {
+    this.bubbleOn = false;
+    this.renderBubble();
+  }, BUBBLE_DURATION_MS);
+};
+
 // ---- 碎碎念（每只宠物独立：按 eventsRefreshSec.whisper 周期轮询自己的句子，用本种类人设生成） ----
 PetSprite.prototype.startWhisperLoop = function startWhisperLoop() {
   if (!this.pet.whisperEnabled || this.whisperLoopTimer !== null) return;
@@ -216,6 +233,7 @@ PetSprite.prototype.showBalanceNow = function showBalanceNow(state) {
   const name = S.pickSlot(slot, this.anim); // 数组槽位档内随机抽 1，且避开当前正播动画（避免连续重复，与浏览器一致）
   this.stopMove();
   this.bubbleOn = true;
+  this.balanceWrap = false; // 正常余额气泡是单行（nowrap），别继承上一次文字说明的换行变体
   this.balanceView = S.balanceBubbleView(state);
   this.renderBubble();
   // 气泡 10s 定时消失（与动画解耦：即使动画被点击/拖拽打断，气泡也按时收起；重复触发先清旧定时器）
@@ -228,6 +246,20 @@ PetSprite.prototype.showBalanceNow = function showBalanceNow(state) {
 };
 
 // ---------- 轮询组装（容器统一拉取/触发，与浏览器 PetMulti 同一套路径；boot 成功后调用） ----------
+
+// 余额不可用 → 文字说明气泡（周期轮询与手动 /balance 触发共用这一条路径；判定在 shared，与浏览器同一份）：
+// explicit=true（手动触发）一律弹——用户问了就该有答复，包括"服务商不支持"这件事；
+// 自动轮询仅在原因（含服务商）变化时弹一次，避免每 30 分钟反复刷同一句话。
+function applyBalanceNotice(state, explicit) {
+  const notice = S.decideBalanceNotice(state, balanceNoticeKey, explicit);
+  balanceNoticeKey = notice.key;
+  if (notice.show) for (const s of sprites) s.showBalanceNotice(state);
+  // 未登记服务商是配置事实（已由气泡说明），不再刷 console；其余原因照旧显式报错，绝不伪造余额
+  if (state.reason !== 'unsupported') {
+    console.error('[dsh-pet] 余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
+  }
+}
+
 function startLoops() {
   if (loopsStarted) return;
   loopsStarted = true;
@@ -246,8 +278,9 @@ function startLoops() {
         if (state.ok) {
           balanceTick++;
           for (const s of sprites) s.onBalanceTick(state, balanceTick);
-        } else if (state.reason !== 'unsupported') {
-          console.error('[dsh-pet] 余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
+        } else {
+          // 不可用：按 shared 的判定决定是否弹文字说明（自动轮询仅在原因变化时弹一次）
+          applyBalanceNotice(state, false);
         }
       } catch (e) {
         console.error('[dsh-pet] 余额拉取异常', e);
@@ -279,9 +312,8 @@ function startLoops() {
             balanceTick++;
             for (const s of sprites) s.onBalanceTick(state, balanceTick);
           } else {
-            console.error(
-              '[dsh-pet] 手动触发余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''),
-            );
+            // 手动 /balance：显式请求，不可用也必弹文字说明
+            applyBalanceNotice(state, true);
           }
         }
       }

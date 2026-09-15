@@ -137,6 +137,7 @@ let config = null; // { pets: 拍平后的成品实例列表, refreshSec: 主条
 let sprites = []; // PetSprite[]（本窗口只装一只宠物）
 let balance = null; // BalanceState（本窗口单宠共用）
 let balanceTick = 0;
+let balanceNoticeKey = null; // 上次已提示的不可用原因（reason:provider）：自动轮询只在原因变化时再弹（判定在 shared，与浏览器同一份）
 let workTick = 0; // 工作状态联动 tick：容器 1s 轮询 /work-status，ts 变化才递增（各启用宠物以此触发）
 let bootTimer = null;
 let loopsStarted = false;
