@@ -24,6 +24,8 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { readFileSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
+// 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
+const { decideWindowIgnore } = require('./pointer-target.js');
 
 // 允许无用户手势直接播放（余额动画等）
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -227,10 +229,21 @@ function updatePetState(petId, partial) {
 
 /**
  * 每窗口当前穿透状态（true = 整窗点击穿透）。所有 setIgnoreMouseEvents 只经本文件
- * （创建时初始化 + pet:set-interactive 翻转），这里镜像真实状态，供冒烟断言/排查使用
+ * （创建时初始化 + pet:set-interactive 翻转 + 光标兜底轮询），这里镜像真实状态，供冒烟断言/排查使用
  * （Electron 无 isIgnoringMouseEvents 取值 API）。
  */
 const windowIgnore = new Map();
+
+/** 翻转整窗穿透的**唯一出口**：状态与 windowIgnore 镜像永远一起更新（穿透期间保留 forward） */
+function setWindowIgnore(win, ignore) {
+  win.setIgnoreMouseEvents(ignore, { forward: true });
+  windowIgnore.set(win.id, ignore);
+}
+
+/** 兜底通道的光标轮询间隔（ms，与 issue #55 报告者实测值一致） */
+const POINTER_POLL_MS = 60;
+/** 冒烟期间暂停兜底轮询：它按**真实光标**翻转 windowIgnore，会干扰冒烟对渲染端通道的断言 */
+let pointerFallbackPaused = false;
 
 /**
  * 桌面宠物列表（[{id,size}]）：宿主经 DSH_PET_PETS 透传（每只宠物一个窗口）。
@@ -356,12 +369,34 @@ function createPetWindows() {
     });
     // 默认整窗点击穿透（renderer 在光标进/出身体命中区时经 IPC 翻转可交互）；
     // forward:true 保证穿透期间 mousemove 仍转发进渲染端做命中判定。
-    win.setIgnoreMouseEvents(true, { forward: true });
-    windowIgnore.set(win.id, true);
+    setWindowIgnore(win, true);
     win.once('ready-to-show', () => win.show());
+    // [#55 兜底显示] paintWhenInitiallyHidden:false 时渲染器可能不产出首帧，ready-to-show 便永不触发
+    // （Electron 文档原文：ready-to-show "will never fire if you use paintWhenInitiallyHidden: false"），
+    // 而 show() 只挂在它上面 → 窗口永远隐藏（进程活着、宠物逻辑照跑，桌面上什么都没有）。
+    // 页面加载完成后强制兜底一次；zoomFactor 的设置在更早注册的 did-finish-load 里，顺序不受影响。
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        if (!win.isDestroyed() && !win.isVisible()) win.show();
+      }, 400);
+    });
+    // [#55 兜底交互] 上面的翻转链路只有「Electron forward 鼠标钩子 → 渲染端命中判定」一个入口，
+    // 该钩子在 Windows 上可能静默失效（回调超时被系统摘掉 / 被别的软件钩子干扰）→ 光标悬浮无反应、
+    // 拖不动、点击与右键全废。这里由主进程按**真实光标位置**独立判定，不依赖那条转发链路：
+    // 与 renderer 那条通道并存且判定区域一致（状态未变不翻转），转发正常的环境行为完全不变。
+    const pointerTimer = setInterval(() => {
+      if (pointerFallbackPaused || win.isDestroyed()) return;
+      const b = win.getBounds();
+      if (b.width < 8 || b.height < 8) return; // 尺寸还没落定（renderer 首帧上报前）
+      const ignoring = windowIgnore.get(win.id) !== false;
+      const next = decideWindowIgnore(b, screen.getCursorScreenPoint(), ignoring);
+      if (next !== ignoring) setWindowIgnore(win, next);
+    }, POINTER_POLL_MS);
     win.on('closed', () => {
+      clearInterval(pointerTimer);
       windows.delete(pet.id);
       lastRequestedBounds.delete(win.id);
+      windowIgnore.delete(win.id);
     });
     win
       .loadFile('index.html', {
@@ -594,12 +629,12 @@ app.whenReady().then(() => {
     }
   });
 
-  // 点击穿透翻转：renderer 在光标进/出身体命中区时上报；穿透期间仍保留 forward（mousemove 继续转发）
+  // 点击穿透翻转：renderer 在光标进/出身体命中区时上报；穿透期间仍保留 forward（mousemove 继续转发）。
+  // 兜底轮询（见 createPetWindows）也走同一个出口 setWindowIgnore，两条通道共享同一份镜像状态。
   ipcMain.on('pet:set-interactive', (event, interactive) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
-    win.setIgnoreMouseEvents(!interactive, { forward: true });
-    windowIgnore.set(win.id, !interactive);
+    setWindowIgnore(win, !interactive);
   });
 
   // 右键菜单「打开网站」：交给**系统默认浏览器**打开（等效于网页里 Ctrl+点击链接新标签页），
@@ -849,12 +884,15 @@ app.whenReady().then(() => {
           console.log('[dsh-pet-desktop-helper] smoke bounds:', JSON.stringify(first.getContentBounds()));
           // 点击穿透 round-trip：setInteractive(true)→窗口捕获输入（忽略鼠标=false）；
           // setInteractive(false)→恢复整窗穿透（忽略鼠标=true）。状态取自主进程镜像 windowIgnore。
+          // 期间暂停兜底轮询：它按真实光标位置翻转，冒烟时鼠标不在宠物身上会覆盖本断言的状态。
+          pointerFallbackPaused = true;
           await first.webContents.executeJavaScript('window.petBridge.setInteractive(true); true;');
           await new Promise((r) => setTimeout(r, 80));
           const interactiveIgnoring = windowIgnore.get(first.id);
           await first.webContents.executeJavaScript('window.petBridge.setInteractive(false); true;');
           await new Promise((r) => setTimeout(r, 80));
           const passthroughIgnoring = windowIgnore.get(first.id);
+          pointerFallbackPaused = false;
           console.log(
             '[dsh-pet-desktop-helper] smoke interactive round-trip:',
             JSON.stringify({ interactiveIgnoring, passthroughIgnoring }),
