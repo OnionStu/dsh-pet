@@ -62,6 +62,8 @@ class PetSprite {
     // 交互/移动
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
     this.justDragged = false;
+    this._interactive = null; // 已上报的可交互状态（setInteractive 去重用）
+    this._inputBusy = null; // 已上报的"正在用输入"状态（syncInputBusy 去重用）
     // 拖拽抛掷物理（与浏览器 pet.ts 同构；纯计算在 shared-core S.*）：
     // 拖拽中弹簧跟随目标（包围盒左上角，工作区 px），松手按指针轨迹估速 → 抛掷（重力+边缘反弹）
     this.dragTrail = []; // 指针轨迹采样（screenX/Y + performance.now()，初速估算用）
@@ -798,6 +800,10 @@ class PetSprite {
       petX: this.pos.x,
       petY: this.pos.y,
     };
+    // 拖拽信号（桌面端专有）：主进程的兜底穿透通道按**光标与窗口矩形**判定，而窗口比宠物身体大一圈；
+    // 拖拽中宠物滞后于光标，光标可能跑到窗口外→窗口翻回穿透→本窗口收不到 pointermove/pointerup
+    // （宠物"飞"出去，见 pointer-target.js）。这里上报"我正在用输入"，主进程据此绝不翻回穿透。
+    this.syncInputBusy();
     // 注意：舞台「拍平」（去掉 translateY(bottomPad)）不能在这里做——
     // 纯点击（按下即松开）会让人物瞬移上移再落下。与浏览器一致：只有拖拽超过阈值才拍平。
   }
@@ -816,6 +822,7 @@ class PetSprite {
       if (this.animations.drag.length) {
         this.playOnce(S.pick(this.animations.drag));
       }
+      this.syncInputBusy(); // 拖拽成立：主进程兜底通道闭嘴（见 inputBusy）
     }
     // 记录指针轨迹（screenX/Y 采样：与视口坐标只差常数偏移，速度一致；初速估算用；÷scale 进 CSS 系）
     const now = performance.now();
@@ -835,6 +842,7 @@ class PetSprite {
     this.hit.classList.remove('dragging');
     this.stopDragFollow(); // 弹簧跟随立即停（位置定格在实时 this.pos）
     this.stage.style.transform = 'translateY(' + this.bottomPad + 'px)';
+    this.syncInputBusy(); // 拖拽结束：交还给常规判定（幂等，非拖拽时多调一次不发 IPC）
     if (wasDragging) {
       this.justDragged = true;
       setTimeout(() => {
@@ -890,6 +898,33 @@ class PetSprite {
   }
 
   // ---- 点击穿透（严格对齐浏览器：只有身体命中区可交互，透明像素穿透到下层应用） ----
+  /**
+   * 本窗口是否**必须保持可交互**（= "我正在用这个窗口的鼠标输入"）。
+   *
+   * 三个来源：拖拽中 / 右键菜单开着 / 对话弹窗开着——它们都是"窗口内的 DOM 或事件链正在被使用"，
+   * 而它们的输入全部来自**窗口级鼠标事件**（pointermove/pointerup/click）：窗口一旦变回穿透，
+   * 输入链就断了（拖拽会定格在最后一次采样上，松手也没人报 pointerup → 宠物按旧速度飞出去）。
+   *
+   * 这个信号是**渲染端专有的知识**：只有它知道"我正在用输入"，主进程无从推断（光看光标位置和窗口
+   * 位移分不清"拖拽跟手"和"漫游/抛掷"）。所以由渲染端上报，主进程的兜底通道据此闭嘴。
+   */
+  inputBusy() {
+    return this.dragState.active || this.menuOpen || this.chatOpen;
+  }
+
+  /**
+   * 上报一次"要不要保持可交互"。**所有**状态变化点都走这里（幂等：值没变不发 IPC）。
+   * 与 setInteractive 的分工：setInteractive 表达"光标在不在身体上"（常规判定），
+   * 本方法表达"我有没有在用输入"（优先级更高，覆写常规判定）。
+   */
+  syncInputBusy() {
+    const busy = this.inputBusy();
+    if (busy === this._inputBusy) return;
+    this._inputBusy = busy;
+    window.__dshPetDebug.inputBusy = busy;
+    if (window.petBridge) window.petBridge.setInputBusy(busy);
+  }
+
   setInteractive(flag) {
     const next = !!flag;
     if (next === this._interactive) return; // 只在状态变化时发 IPC，避免逐帧刷屏
@@ -985,6 +1020,7 @@ class PetSprite {
     if (!tree.length) return;
     this.menuOpen = true;
     this.setInteractive(true); // 菜单是窗口内 DOM：悬停期间整窗保持可交互，关闭后恢复命中区穿透
+    this.syncInputBusy();
     window.__dshPetDebug.menuOpen = true;
     const m = S.mountContextMenu({
       tree,
@@ -997,6 +1033,7 @@ class PetSprite {
       onClose: () => {
         this.menuOpen = false;
         window.__dshPetDebug.menuOpen = false;
+        this.syncInputBusy();
       },
     });
     this.menuClose = m.close;
@@ -1046,6 +1083,7 @@ class PetSprite {
     }
     this.menuOpen = false;
     window.__dshPetDebug.menuOpen = false;
+    this.syncInputBusy(); // 菜单关：若没有别的占用（拖拽/弹窗）则交还常规判定
   }
 
   // 「查看余额」菜单：立即拉取余额并展示（不需要等 1s 触发轮询；展示走 showBalanceNow 同一路径）
@@ -1116,12 +1154,14 @@ class PetSprite {
         this.chatClose = null;
         this.chatOpen = false;
         window.__dshPetDebug.chatOpen = false;
+        this.syncInputBusy(); // 弹窗关：交还常规判定（菜单还开着的话仍保持忙，见 inputBusy）
         if (!this.menuOpen) this.setInteractive(false); // 弹窗关了且无菜单：恢复命中区穿透
       },
     });
     this.chatClose = m.close;
     this.chatOpen = true; // 穿透守卫：弹窗期间整窗保持可交互，光标移到输入框不被翻回穿透
     window.__dshPetDebug.chatOpen = true;
+    this.syncInputBusy();
     this.setInteractive(true);
   }
 

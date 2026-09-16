@@ -246,6 +246,19 @@ const POINTER_POLL_MS = 60;
 let pointerFallbackPaused = false;
 
 /**
+ * 每窗口「渲染端正拿着鼠标输入」标记（win.id → true/false），由渲染端经 `pet:input-busy` 上报。
+ *
+ * 为什么必须由渲染端说了算：兜底通道判定的是"光标与**窗口矩形**"的关系，而窗口矩形比宠物身体大
+ * 一圈（四周各半只宠物的余量）。拖拽时宠物由 rAF 弹簧追赶光标、**滞后**于光标；甩得快时滞后量
+ * 超过那一圈余量，光标就落在矩形外 → 判成"窗外" → 翻回穿透 → 渲染端正在拖拽的 window 级
+ * pointermove/pointerup 全断（鼠标还按着，宠物却按旧速度"飞"出去，连松手都没人报）。
+ *
+ * 主进程**无法自行判断**这件事（光看光标位置和窗口位移分不清"拖拽跟手"与"漫游/抛掷"），
+ * 而渲染端知道（拖拽中 / 菜单开着 / 对话弹窗开着）。所以只由它上报，busy 期间本进程绝不翻回穿透。
+ */
+const inputBusy = new Map();
+
+/**
  * 桌面宠物列表（[{id,size}]）：宿主经 DSH_PET_PETS 透传（每只宠物一个窗口）。
  * 解析失败/未透传（手动 start-desktop）时回落到单个默认宠物窗口；renderer 首帧发来的
  * set-bounds 会按真实配置自校正尺寸与位置。
@@ -384,12 +397,15 @@ function createPetWindows() {
     // 该钩子在 Windows 上可能静默失效（回调超时被系统摘掉 / 被别的软件钩子干扰）→ 光标悬浮无反应、
     // 拖不动、点击与右键全废。这里由主进程按**真实光标位置**独立判定，不依赖那条转发链路：
     // 与 renderer 那条通道并存且判定区域一致（状态未变不翻转），转发正常的环境行为完全不变。
+    //
+    // 唯一不可自行决定的事：**渲染端正拿着鼠标输入时不得翻回穿透**（见 inputBusy）。
+    // 本进程无从判断这件事——光看光标位置与窗口位移分不清"拖拽跟手"和"漫游/抛掷"，所以由渲染端上报。
     const pointerTimer = setInterval(() => {
       if (pointerFallbackPaused || win.isDestroyed()) return;
       const b = win.getBounds();
       if (b.width < 8 || b.height < 8) return; // 尺寸还没落定（renderer 首帧上报前）
       const ignoring = windowIgnore.get(win.id) !== false;
-      const next = decideWindowIgnore(b, screen.getCursorScreenPoint(), ignoring);
+      const next = decideWindowIgnore(b, screen.getCursorScreenPoint(), ignoring, inputBusy.get(win.id) === true);
       if (next !== ignoring) setWindowIgnore(win, next);
     }, POINTER_POLL_MS);
     win.on('closed', () => {
@@ -397,6 +413,7 @@ function createPetWindows() {
       windows.delete(pet.id);
       lastRequestedBounds.delete(win.id);
       windowIgnore.delete(win.id);
+      inputBusy.delete(win.id);
     });
     win
       .loadFile('index.html', {
@@ -635,6 +652,15 @@ app.whenReady().then(() => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
     setWindowIgnore(win, !interactive);
+  });
+
+  // 渲染端正拿着鼠标输入（拖拽中 / 菜单开着 / 对话弹窗开着）：兜底轮询据此绝不翻回穿透。
+  // 只存标记、不直接翻转窗口——**唯一出口**仍是 setWindowIgnore（在兜底轮询里按完整规则判定），
+  // 否则会出现"两条通道抢着翻同一个窗口"的竞态。
+  ipcMain.on('pet:input-busy', (event, busy) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    inputBusy.set(win.id, !!busy);
   });
 
   // 右键菜单「打开网站」：交给**系统默认浏览器**打开（等效于网页里 Ctrl+点击链接新标签页），

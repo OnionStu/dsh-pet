@@ -39,22 +39,38 @@ function spriteHitRect(bounds) {
   };
 }
 
+/** 判定轮询间隔（ms，与 issue #55 报告者实测值一致） */
+const POINTER_POLL_MS = 60;
+
 /**
  * 该不该让窗口保持穿透（= `setIgnoreMouseEvents` 的第一个参数）。
  *
  * 规则（与 issue #55 报告者实测的表一致）：
+ *  - 渲染端正拿着鼠标输入（拖拽中 / 菜单开着 / 对话弹窗开着）→ **不穿透**，最高优先级；
  *  - 光标在宠物身体上 → 不穿透（可交互）；
  *  - 光标在窗口内、宠物外 → **保持当前状态**：否则渲染端自绘的右键菜单/对话弹窗，鼠标一移出身体
  *    就立刻变穿透，点不到；
  *  - 光标在窗口外 → 恢复穿透（透明像素不挡下层应用）。
  *
+ * 为什么 busy 必须优先于位置判定（0.2.10 的回归）：本函数判定的是**光标与窗口矩形**的关系，
+ * 而窗口矩形比宠物身体大一圈（四周各半只宠物的余量）。拖拽时宠物由 rAF 弹簧追赶光标、**滞后**于
+ * 光标；甩得快时滞后量超过那一圈余量，光标就落在矩形外 → 判成"窗外" → 翻回穿透 → 渲染端正在
+ * 拖拽的 window 级 pointermove/pointerup 全断（鼠标还按着，宠物却按旧速度"飞"出去；速度不是被
+ * 估算出来的——收不到 pointermove 就采不到新轨迹，连松手的 pointerup 都没人报，轨迹停在最后一次
+ * 采样上继续积分）。所以"正拿着输入"这件事必须能**否决**位置判定，而不是被位置判定否决。
+ *
+ * 位置判定里**不含**拖拽容差：一旦 busy，位置完全不参与（任何"离得近才算"的阈值都会重新引入
+ * "滞后量 > 余量"这个致命条件，正是 bug 本身）。
+ *
  * @param {{x:number,y:number,width:number,height:number}} bounds 窗口矩形（DIP）
  * @param {{x:number,y:number}} point 真实光标位置（screen.getCursorScreenPoint()，DIP）
  * @param {boolean} ignoring 窗口当前是否穿透（取自主进程的 windowIgnore 镜像，不用本地副本：
  *   渲染端那条通道也在翻转它，本地副本会与之失步）
+ * @param {boolean} busy 渲染端是否正在用这个窗口的鼠标输入（拖拽中/菜单开/弹窗开，见 inputBusy）
  * @returns {boolean} 新的穿透状态
  */
-function decideWindowIgnore(bounds, point, ignoring) {
+function decideWindowIgnore(bounds, point, ignoring, busy) {
+  if (busy) return false; // 渲染端正拿着输入：绝不翻回穿透（翻了就断它的输入链）
   const inWindow =
     point.x >= bounds.x &&
     point.x < bounds.x + bounds.width &&
@@ -67,4 +83,4 @@ function decideWindowIgnore(bounds, point, ignoring) {
   return ignoring; // 窗口余量区：保持（菜单/弹窗可点）
 }
 
-module.exports = { HIT_BOX, CANVAS_H, STAGE_W, spriteHitRect, decideWindowIgnore };
+module.exports = { HIT_BOX, CANVAS_H, STAGE_W, POINTER_POLL_MS, spriteHitRect, decideWindowIgnore };

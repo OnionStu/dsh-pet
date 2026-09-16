@@ -21,7 +21,9 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const helper = '../../runtime/electron-helper/';
-const { HIT_BOX, CANVAS_H, STAGE_W, spriteHitRect, decideWindowIgnore } = require(helper + 'pointer-target.js');
+const { HIT_BOX, CANVAS_H, STAGE_W, POINTER_POLL_MS, spriteHitRect, decideWindowIgnore } = require(
+  helper + 'pointer-target.js',
+);
 
 /** 包内文件源码（守卫用；相对 src/host/ 解析） */
 const readSource = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -64,6 +66,61 @@ describe('decideWindowIgnore —— 兜底通道的判定规则（issue #55 报�
   test('窗口尺寸未落定（renderer 首帧上报前）不误判：极小矩形内不产生"可交互"', () => {
     const tiny = { x: 0, y: 0, width: 4, height: 4 };
     assert.equal(decideWindowIgnore(tiny, { x: 0, y: 0 }, true), true);
+  });
+});
+
+describe('输入租约（busy）—— 0.2.10「甩快了即使没松手也会飞出去」的修复', () => {
+  /** 拖拽中宠物滞后于光标：光标跑到窗口矩形外（甩得快时必然出现，滞后量 > 半只宠物） */
+  const ahead = { x: bounds.x + bounds.width + 120, y: bounds.y + 300 };
+
+  test('busy=false：位置规则原样生效（0.2.10 的判定不变）', () => {
+    assert.equal(decideWindowIgnore(bounds, ahead, false, false), true, '窗外→穿透');
+    assert.equal(
+      decideWindowIgnore(bounds, { x: bounds.x + 20, y: bounds.y + 20 }, false, false),
+      false,
+      '余量区→保持当前（可交互）',
+    );
+    assert.equal(
+      decideWindowIgnore(bounds, { x: bounds.x + 20, y: bounds.y + 20 }, true, false),
+      true,
+      '余量区→保持透视',
+    );
+  });
+
+  test('busy=true：光标在窗口外也**不得**翻回穿透——这是本次回归的正面断言', () => {
+    assert.equal(
+      decideWindowIgnore(bounds, ahead, true, true),
+      false,
+      '这一拍翻回穿透，拖拽的 window 级事件链就断了：指针还按着，宠物却按旧速度飞出去',
+    );
+  });
+
+  test('busy=true：无论光标在多远、当前是什么状态，一律保持可交互（位置完全不参与）', () => {
+    const spots = [
+      { x: bounds.x - 900, y: bounds.y - 900 },
+      { x: bounds.x + bounds.width + 3000, y: bounds.y + 10 },
+      { x: bounds.x + 20, y: bounds.y + 20 },
+      { x: 0, y: 0 },
+    ];
+    for (const p of spots) {
+      assert.equal(decideWindowIgnore(bounds, p, true, true), false, 'busy 时不得穿透 ' + JSON.stringify(p));
+      assert.equal(decideWindowIgnore(bounds, p, false, true), false, 'busy 时不得穿透 ' + JSON.stringify(p));
+    }
+  });
+
+  test('busy 是**否决权**：它压过位置判定（任何"离得近才算"的阈值都会重新引入滞后量条件）', () => {
+    // 反证：即使光标离窗口十万八千里，busy 期间也只能是可交互
+    const veryFar = { x: bounds.x + 99999, y: bounds.y };
+    assert.equal(decideWindowIgnore(bounds, veryFar, true, true), false);
+  });
+
+  test('busy 释放后立刻回到位置规则（松手/关菜单/关弹窗都不留下粘性）', () => {
+    assert.equal(decideWindowIgnore(bounds, ahead, false, true), false, 'busy 期间：可交互');
+    assert.equal(decideWindowIgnore(bounds, ahead, false, false), true, 'busy 释放：同一位置立刻恢复穿透');
+  });
+
+  test('轮询间隔仍在（60ms，issue #55 报告者实测值）', () => {
+    assert.equal(POINTER_POLL_MS, 60);
   });
 });
 
@@ -122,6 +179,24 @@ describe('源码守卫 —— helper 的两个兜底必须在位', () => {
     );
     assert.ok(/clearInterval\(pointerTimer\)/.test(main), '窗口关闭时必须停掉轮询');
   });
+
+  test('输入租约闭环：渲染端上报 busy，主进程据此判定，且只走唯一出口', () => {
+    assert.ok(/const inputBusy = new Map\(\)/.test(main), '必须有每窗口的 busy 标记表');
+    assert.ok(/ipcMain\.on\('pet:input-busy'/.test(main), 'busy 上报必须被接收');
+    assert.ok(
+      /decideWindowIgnore\(b, screen\.getCursorScreenPoint\(\), ignoring, inputBusy\.get\(win\.id\) === true\)/.test(
+        main,
+      ),
+      '兜底轮询必须把 busy 带进判定——这正是 0.2.10 缺的一环（拖拽中被翻回穿透）',
+    );
+    assert.ok(/inputBusy\.delete\(win\.id\)/.test(main), '窗口关闭时必须清掉 busy 标记（防 id 复用串味）');
+    // busy 只能经兜底轮询生效，不得在 IPC 里直接翻窗口——否则两条通道抢着翻同一个窗口
+    assert.ok(
+      !/ipcMain\.on\('pet:input-busy'[\s\S]{0,400}?setWindowIgnore\(/.test(main),
+      'busy 处理器不得直接 setWindowIgnore（唯一出口在轮询里，按完整规则判定）',
+    );
+    assert.ok(/inputBusy\.set\(win\.id, !!busy\)/.test(main), 'busy 只做标记，由下一拍轮询统一决策');
+  });
 });
 
 describe('守卫：主进程镜像的命中盒常量不得与 src/shared/constants.ts 漂移', () => {
@@ -142,5 +217,67 @@ describe('守卫：主进程镜像的命中盒常量不得与 src/shared/constan
       /S\.HIT_BOX\.x0 \/ 640/.test(readSource(helper + 'sprite.js')),
       'sprite.js 的命中判定用 640 作画布宽——两边必须同一约定',
     );
+  });
+});
+
+describe('守卫：渲染端的输入租约必须在位（helper 随包发行，只能读源码断言）', () => {
+  const sprite = readSource(helper + 'sprite.js');
+
+  test('租约来源必须**正好**是那三个"正在用窗口输入"的状态', () => {
+    const m = /inputBusy\(\)\s*\{([\s\S]*?)\n {2}\}/.exec(sprite);
+    assert.ok(m, 'sprite.js 里找不到 inputBusy()');
+    const body = m[1];
+    for (const flag of ['dragState.active', 'menuOpen', 'chatOpen']) {
+      assert.ok(body.includes(flag), `租约必须包含 ${flag}`);
+    }
+  });
+
+  test('建立点：拖拽成立 / 菜单开 / 弹窗开都上报', () => {
+    // 拖拽：onPointerDown 里立刻上报（不等过阈值——按下瞬间窗口就已经必须保持可交互）
+    assert.ok(
+      /setPointerCapture[\s\S]{0,600}?this\.syncInputBusy\(\)/.test(sprite),
+      'onPointerDown 必须在建立拖拽状态后上报 busy',
+    );
+    assert.ok(
+      /d\.dragging = true;[\s\S]{0,400}?this\.syncInputBusy\(\)/.test(sprite),
+      '真正开始拖拽时也要上报（此时可能尚未上报过）',
+    );
+    assert.ok(/this\.menuOpen = true;[\s\S]{0,300}?this\.syncInputBusy\(\)/.test(sprite), '菜单打开必须上报');
+    assert.ok(/this\.chatOpen = true;[\s\S]{0,300}?this\.syncInputBusy\(\)/.test(sprite), '对话弹窗打开必须上报');
+  });
+
+  test('解除点：松手 / closeMenu / 菜单 onClose / 弹窗 onClose 每一处都上报', () => {
+    assert.ok(/this\.syncInputBusy\(\)/.test(sprite), '必须存在上报方法');
+    // 松手（onPointerUp）
+    assert.ok(
+      /onPointerUp\(e\) \{[\s\S]{0,400}?this\.syncInputBusy\(\)/.test(sprite),
+      '松手/取消必须上报（否则窗口粘在可交互）',
+    );
+    // closeMenu 一处覆盖：菜单项的 onAction、mouseleave、destroy
+    assert.ok(
+      /closeMenu\(\) \{[\s\S]{0,400}?this\.syncInputBusy\(\)/.test(sprite),
+      'closeMenu 必须上报（菜单的四条关闭路径都走它）',
+    );
+    // 菜单被点外/Esc 关闭：走的是 mountContextMenu 的 onClose，不经 closeMenu
+    assert.ok(
+      /onClose: \(\) => \{\s*this\.menuOpen = false;[\s\S]{0,200}?this\.syncInputBusy\(\)/.test(sprite),
+      '菜单 onClose（点外/Esc）必须上报——这条路径不经 closeMenu',
+    );
+    // 对话弹窗关闭
+    assert.ok(/this\.chatOpen = false;[\s\S]{0,300}?this\.syncInputBusy\(\)/.test(sprite), '对话弹窗关闭必须上报');
+  });
+
+  test('上报是幂等的、只走 petBridge.setInputBusy（不逐帧刷 IPC）', () => {
+    assert.ok(
+      /if \(busy === this\._inputBusy\) return;/.test(sprite),
+      '值未变必须直接返回（拖拽中 mouseleave 等高频路径会反复调用）',
+    );
+    assert.ok(/window\.petBridge\.setInputBusy\(busy\)/.test(sprite), '必须经 petBridge 上报');
+  });
+
+  test('preload 暴露 setInputBusy（方法名必须与 sprite.js 调用的一致）', () => {
+    const preload = readSource(helper + 'preload.js');
+    assert.ok(/setInputBusy\(busy\)/.test(preload), 'preload 必须有 setInputBusy');
+    assert.ok(/'pet:input-busy'/.test(preload), 'IPC 频道名必须与 main.js 一致');
   });
 });

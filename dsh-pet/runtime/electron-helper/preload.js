@@ -7,6 +7,11 @@
 //     飞行宠物撞到）；vx/vy = 当前速度（飞行中实时值，静止/拖拽 = 0）。
 //   - setInteractive：点击穿透翻转——窗口默认整窗穿透（透明像素不挡下层应用），
 //     renderer 在光标进/出宠物身体命中区时上报，主进程 setIgnoreMouseEvents 翻转。
+//   - setInputBusy：**我正在用这个窗口的鼠标输入**（拖拽中 / 菜单开着 / 对话弹窗开着），
+//     由渲染端上报。主进程光看光标位置与窗口位移分不清"拖拽跟手"和"漫游/抛掷"，而渲染端知道。
+//     busy 期间主进程的兜底通道**绝不翻回穿透**（一旦翻回，渲染端正在用的 window 级
+//     pointermove/pointerup 就断了：宠物会按旧速度飞出去，连松手的 pointerup 都收不到）。
+//     只在状态翻转时发一次（幂等，不逐帧）。
 //   - 宠物间碰撞（跨窗，主进程 broker）：
 //       reportFlight：飞行中每 ~30ms 上报自己的状态（位置/速度/尺寸）→ 主进程汇聚并广播；
 //       onFlightStates：订阅主进程广播的全量宠物状态（碰撞检测用其它宠物的最新位置/速度）；
@@ -20,6 +25,10 @@ contextBridge.exposeInMainWorld('petBridge', {
   },
   setInteractive(interactive) {
     ipcRenderer.send('pet:set-interactive', !!interactive);
+  },
+  // 我正在用这个窗口的鼠标输入（拖拽中/菜单开/弹窗开）：主进程兜底通道在 busy 期间绝不翻回穿透
+  setInputBusy(busy) {
+    ipcRenderer.send('pet:input-busy', !!busy);
   },
   // 右键菜单「打开网站」：主进程用系统默认浏览器打开 DSH 网站（等效网页 Ctrl+点击链接）
   openDshSite(url) {
