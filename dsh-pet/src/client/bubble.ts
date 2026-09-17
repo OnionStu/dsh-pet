@@ -34,6 +34,10 @@ const bubbleCss = [
     'transform:translateX(-50%);border:calc(var(--dsh-pet-size)*0.017) solid transparent;' +
     'border-top-color:rgba(255,255,255,.92);border-bottom:none}',
   '.dsh-pet-bubble.is-on{opacity:1}',
+  // 同屏互斥：宠物头顶锚点只有一个，余额/碎碎念/work-status 气泡同时点亮会叠成一团
+  // （余额提示常驻 + 工作状态 10s 停留最易撞车）。把「后面还有 is-on 兄弟」的气泡淡出，
+  // 只留 DOM 顺序最后一个（work-status > 碎碎念 > 余额），不改 React 渲染逻辑。
+  '.dsh-pet-bubble.is-on:has(~ .dsh-pet-bubble.is-on){opacity:0}',
   // 碎碎念变体：字号缩到余额气泡的 0.75（0.0455→0.034）、取消 nowrap 允许换行、
   // 宽度随文字数量自适应（短句窄框、长句封顶绕行），高度随行数自然增长
   '.dsh-pet-bubble.dsh-pet-whisper{font-size:calc(var(--dsh-pet-size)*0.034);' +
