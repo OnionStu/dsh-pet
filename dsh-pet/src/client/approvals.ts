@@ -132,6 +132,7 @@ function createAlertsRoot(): HTMLElement {
 /** 成品配置里宠物条目的窄接口 */
 interface PetEntryLike {
   size?: unknown;
+  workStatusEnabled?: unknown;
   position?: { corner?: unknown; marginX?: unknown; marginY?: unknown };
 }
 
@@ -155,7 +156,16 @@ function applyAlertAnchor(root: HTMLElement, entry: PetEntryLike | null): void {
   root.style.setProperty('--h', size * (9 / 16) + 'px');
 }
 
-/** 读成品配置取主宠物（main 优先，无 main 取第一条）的 position/size；失败静默回落默认锚点 */
+/** 成品配置容器窄接口：宠物条目在 main.pets 数组（文件宠物可能以其它 key 平铺，见兜底） */
+interface ConfigContainerLike {
+  main?: { pets?: unknown };
+}
+
+/**
+ * 读成品配置取主宠物（main.pets 里启用 workStatusEnabled 的优先，其次 pets[0]；
+ * 兼容扁平旧结构：无 main.pets 时取第一个带 position 的条目）的 position/size；
+ * 失败静默回落默认锚点。
+ */
 async function anchorToPet(root: HTMLElement): Promise<void> {
   try {
     const r = await fetch('/dsh-pet-7340/config');
@@ -163,15 +173,17 @@ async function anchorToPet(root: HTMLElement): Promise<void> {
       applyAlertAnchor(root, null);
       return;
     }
-    const d = (await r.json().catch(() => null)) as Record<string, unknown> | null;
+    const d = (await r.json().catch(() => null)) as ConfigContainerLike | null;
     if (!d || typeof d !== 'object') {
       applyAlertAnchor(root, null);
       return;
     }
-    const main = d['main'];
-    const first = Object.values(d).find((v) => v && typeof v === 'object');
-    const entry = (main && typeof main === 'object' ? main : first) as PetEntryLike | null;
-    applyAlertAnchor(root, entry);
+    const mainPets = d.main && Array.isArray(d.main.pets) ? (d.main.pets as PetEntryLike[]) : [];
+    const pet =
+      mainPets.find((p) => p && p.workStatusEnabled === true) ??
+      mainPets[0] ??
+      (Object.values(d).find((v) => v && typeof v === 'object' && 'position' in v) as PetEntryLike | null);
+    applyAlertAnchor(root, pet ?? null);
   } catch {
     applyAlertAnchor(root, null);
   }
