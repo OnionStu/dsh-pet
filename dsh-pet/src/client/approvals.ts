@@ -123,15 +123,19 @@ function injectAlertCss(): void {
 /** 主宠物容器选择器：PetMulti 渲染多个 .dsh-pet-root，只挂一份到第一个（主宠物） */
 const PET_ROOT_SELECTOR = '.dsh-pet-root';
 
-/** 确保浮层已挂进主宠物容器（React 渲染/重建后自动重挂）；容器未出现则先挂 body 等下一拍 */
+/** 确保浮层挂在主宠物容器内：容器未出现时兜底挂 body（下一拍重挂），已挂进容器则不动 */
 function mountAlertsRoot(root: HTMLElement): void {
-  if (root.isConnected) return; // 已在 DOM 中（挂在哪个父级都算，重挂由下方判断处理）
-  injectAlertCss();
   const host = document.querySelector<HTMLElement>(PET_ROOT_SELECTOR);
   if (host) {
-    host.appendChild(root);
-  } else if (document.body) {
-    document.body.appendChild(root); // 临时兜底：宠物容器尚未渲染，下一拍 render 会重挂进容器
+    if (root.parentElement !== host) {
+      injectAlertCss(); // 首次真正挂载时才注入样式
+      host.appendChild(root); // 含「兜底挂在 body」时重挂进容器
+    }
+    return;
+  }
+  if (!root.isConnected && document.body) {
+    injectAlertCss();
+    document.body.appendChild(root); // 宠物容器尚未渲染：临时兜底
   }
 }
 
@@ -210,9 +214,10 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
   };
 
   render(); // 首帧（页面加载即生效：已挂着的审批立即可见）
-  // 宠物容器渲染晚于插件 apply（React 异步挂载）：轮询补挂，直到挂进容器即停
+  // 宠物容器渲染晚于插件 apply（React 异步挂载）：轮询重挂，直到确认挂进宠物容器即停
   const mountTimer = window.setInterval(() => {
-    if (root.isConnected && root.parentElement?.classList.contains('dsh-pet-root')) {
+    const host = document.querySelector<HTMLElement>(PET_ROOT_SELECTOR);
+    if (host && root.parentElement === host) {
       window.clearInterval(mountTimer);
       return;
     }
