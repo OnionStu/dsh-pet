@@ -39,18 +39,27 @@ interface TurnEndEvent {
   };
 }
 
-/** 帧 → toast 文案；不认识的类型 / turn/end 的非弹分支（aborted 等）返回 null */
-export function frameToToast(frame: NotifyFrame): { title: string; body: string; icon: string } | null {
+/** 帧 → toast 文案；不认识的类型 / turn/end 的非弹分支（aborted 等）返回 null。
+ * sessionId：帧所属会话（host 在生成帧时附上）；浏览器侧用它做「非当前会话的审批也弹」与点击跳转。 */
+export function frameToToast(
+  frame: NotifyFrame,
+): { title: string; body: string; icon: string; sessionId?: string } | null {
+  const sessionId = typeof frame.sessionId === 'string' && frame.sessionId ? frame.sessionId : undefined;
   switch (frame.type) {
     case 'session/event': {
       const ev = (frame.event ?? {}) as TurnEndEvent;
       if (ev.type !== 'turn/end') return null;
       const kind = ev.data?.reason?.kind;
-      if (kind === 'completed') return { title: '对话完成', body: '', icon: NOTIFY_ICONS.done };
+      if (kind === 'completed') return { title: '对话完成', body: '', icon: NOTIFY_ICONS.done, sessionId };
       if (kind === 'error')
-        return { title: '生成失败', body: ev.data?.reason?.error?.message ?? '', icon: NOTIFY_ICONS.error };
+        return {
+          title: '生成失败',
+          body: ev.data?.reason?.error?.message ?? '',
+          icon: NOTIFY_ICONS.error,
+          sessionId,
+        };
       if (kind === 'max-tokens')
-        return { title: '输出被截断', body: '已达到输出 token 上限', icon: NOTIFY_ICONS.truncated };
+        return { title: '输出被截断', body: '已达到输出 token 上限', icon: NOTIFY_ICONS.truncated, sessionId };
       // aborted（用户/父代理取消）、interrupted（崩溃恢复）等：不弹
       return null;
     }
@@ -61,12 +70,13 @@ export function frameToToast(frame: NotifyFrame): { title: string; body: string;
         title: '正在申请权限',
         body: (toolName ? '工具「' + toolName + '」' : '') + (reason ? '：' + reason : ''),
         icon: NOTIFY_ICONS.approval,
+        sessionId,
       };
     }
     case 'question/requested': {
       const q =
         (Array.isArray(frame.questions) && (frame.questions as Array<{ question?: string }>)[0]?.question) || '';
-      return { title: '模型在等你回答', body: q, icon: NOTIFY_ICONS.question };
+      return { title: '模型在等你回答', body: q, icon: NOTIFY_ICONS.question, sessionId };
     }
     case 'host/agent-error': {
       return {

@@ -1033,8 +1033,11 @@ export function apply(ctx: any): void {
     const sessionDispose = ctx.on(
       'session/event',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (_session: any, event: any) => {
-        const frame = reduceNotifyFrame(event as Parameters<typeof reduceNotifyFrame>[0]);
+      (session: any, event: any) => {
+        // 会话归属：与 work-status 监听器同款提取（header.id 优先、退化 id、'unknown' 兜底），
+        // 让浏览器侧能区分「非当前会话的审批」→ 即使页面聚焦也弹 toast / 点击跳转。
+        const sessionId = String(session?.header?.id ?? session?.id ?? 'unknown');
+        const frame = reduceNotifyFrame(event as Parameters<typeof reduceNotifyFrame>[0], sessionId);
         if (frame) pushNotifyFrame(frame);
       },
     );

@@ -94,6 +94,41 @@ describe('reduceNotifyFrame —— session/event 子事件 → 帧', () => {
     assert.equal(reduceNotifyFrame({ type: 'todo/write' }), null);
     assert.equal(reduceNotifyFrame({}), null);
   });
+
+  test('传 sessionId → 三类帧都附会话归属', () => {
+    assert.deepEqual(reduceNotifyFrame({ type: 'turn/end', data: { reason: { kind: 'completed' } } }, 'sess-1'), {
+      type: 'session/event',
+      sessionId: 'sess-1',
+      event: { type: 'turn/end', data: { reason: { kind: 'completed' } } },
+    });
+    assert.deepEqual(reduceNotifyFrame({ type: 'approval/asked', data: { toolName: 'pwsh' } }, 'sess-2'), {
+      type: 'approval/requested',
+      sessionId: 'sess-2',
+      toolName: 'pwsh',
+    });
+    assert.deepEqual(
+      reduceNotifyFrame(
+        { type: 'tool/call', data: { name: 'ask_user_question', arguments: '{"questions":[{"question":"A"}]}' } },
+        'sess-3',
+      ),
+      { type: 'question/requested', sessionId: 'sess-3', questions: [{ question: 'A' }] },
+    );
+  });
+
+  test("sessionId 为空 / 'unknown'（无归属兜底）→ 帧不带 sessionId 字段", () => {
+    assert.deepEqual(reduceNotifyFrame({ type: 'approval/asked', data: { toolName: 'pwsh' } }, 'unknown'), {
+      type: 'approval/requested',
+      toolName: 'pwsh',
+    });
+    assert.deepEqual(reduceNotifyFrame({ type: 'approval/asked', data: { toolName: 'pwsh' } }, ''), {
+      type: 'approval/requested',
+      toolName: 'pwsh',
+    });
+    assert.deepEqual(reduceNotifyFrame({ type: 'approval/asked', data: { toolName: 'pwsh' } }), {
+      type: 'approval/requested',
+      toolName: 'pwsh',
+    });
+  });
 });
 
 describe('parseToolQuestions —— arguments JSON 解析', () => {

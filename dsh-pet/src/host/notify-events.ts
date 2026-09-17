@@ -50,9 +50,15 @@ export function parseToolQuestions(args: unknown): Array<{ question?: string }> 
  * 把一条 session/event 子事件压缩成通知帧；不关心/过滤型事件返回 null。
  * 帧形状与 shared/notify.ts 的 frameToToast 期望完全一致（浏览器侧映射零改动）。
  * data 按宽松 Record 接收（approval/asked 的 reason 是字符串、turn/end 的是对象），内部各自安全取值。
+ * sessionId：会话归属（浏览器侧做「非当前会话的审批也弹」+ toast 点击跳转）；空/unknown 不附字段。
  */
-export function reduceNotifyFrame(event: { type?: string; data?: Record<string, unknown> }): HostNotifyFrame | null {
+export function reduceNotifyFrame(
+  event: { type?: string; data?: Record<string, unknown> },
+  sessionId?: string,
+): HostNotifyFrame | null {
   if (!event?.type) return null;
+  // 会话归属：有效才附（'unknown' 兜底值不算——无归属的帧走旧语义，不触发跨会话弹窗）
+  const sid = typeof sessionId === 'string' && sessionId && sessionId !== 'unknown' ? sessionId : undefined;
   switch (event.type) {
     case 'turn/end': {
       const reason = event.data?.reason as { kind?: string; error?: { message?: string } } | undefined;
@@ -60,6 +66,7 @@ export function reduceNotifyFrame(event: { type?: string; data?: Record<string, 
       if (!kind) return null;
       return {
         type: 'session/event',
+        ...(sid ? { sessionId: sid } : {}),
         event: {
           type: 'turn/end',
           data: { reason },
@@ -70,6 +77,7 @@ export function reduceNotifyFrame(event: { type?: string; data?: Record<string, 
       const data = event.data ?? {};
       return {
         type: 'approval/requested',
+        ...(sid ? { sessionId: sid } : {}),
         ...(typeof data.toolName === 'string' && data.toolName ? { toolName: data.toolName } : {}),
         ...(typeof data.reason === 'string' && data.reason ? { reason: data.reason } : {}),
       };
@@ -78,7 +86,7 @@ export function reduceNotifyFrame(event: { type?: string; data?: Record<string, 
       if (String(event.data?.name ?? '') !== USER_QUESTION_TOOL) return null;
       const questions = parseToolQuestions(event.data?.arguments);
       if (!questions || questions.length === 0) return null;
-      return { type: 'question/requested', questions };
+      return { type: 'question/requested', ...(sid ? { sessionId: sid } : {}), questions };
     }
     default:
       return null;
