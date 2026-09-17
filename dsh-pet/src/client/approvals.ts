@@ -4,9 +4,10 @@
 //   - 会话标题/当前会话 = ctx.sessions.list（SessionListState：byId[].displayTitle / current）
 //   - 行点击 → ctx.sessions.open(sessionId) 切到该会话
 //   - 标题角标 [N 待审批]：N = 非当前会话的待审批数，清零还原
-// 浮层是独立 DOM，运行时挂进主宠物的 .dsh-pet-root（纯 DOM 操作，不碰 React 宠物卡）：
-// 与 work-status 气泡同款定位（头顶居中悬着、随 --dsh-pet-size 缩放、拖拽跟随），
-// z-index 5 > 气泡 3 → 有审批时盖住 work-status/余额气泡，即「有审批优先审批卡」的二选一。
+// 浮层是 body 级 position:fixed 的独立 DOM（不碰 React 宠物卡），每拍读取主宠物
+// .dsh-pet-root 的 rect 像素定位到宠物盒顶正上方居中（拖拽/窗口变化自动跟随）；
+// 有审批时给 root 加 data-dsh-pet-alerts 隐藏其内部所有气泡 → 审批卡独占头顶
+// （「有审批优先审批卡」的二选一，杜绝多气泡重叠）。
 // 与 notify.ts（系统 toast）解耦：本引擎管「页内看得见」的提醒，toast 管「页外」的推送。
 
 // ---------- 待交互条目窄接口（宽松取值，防御上游形状变化） ----------
@@ -86,17 +87,20 @@ function syncTitleBadge(count: number): void {
   document.title = count > 0 ? '[' + count + ' 待审批] ' + titleBase : titleBase;
 }
 
-// ---------- 独立浮层：挂进主宠物的 .dsh-pet-root 内，与 work-status 气泡同款定位 ----------
-// （left:50% 居中 + bottom 悬头顶向上长；继承 pet root 的 --dsh-pet-size 缩放与拖拽 transform，
-//  z-index 5 > 气泡的 3 → 有审批时盖住 work-status/余额气泡，即「有审批优先审批卡」的二选一。）
+// ---------- 独立浮层：body 级 fixed + JS 像素定位到主宠物头顶 ----------
+// 每拍读取主宠物 .dsh-pet-root 的 getBoundingClientRect()，把浮层放到「宠物盒顶正上方居中」
+// （向上长，与 work-status 气泡同语义；拖拽/窗口变化由轮询自动跟随）。
+// 有审批时给 root 加 data-dsh-pet-alerts，CSS 隐藏其内部所有 .dsh-pet-bubble
+// （余额/work-status 气泡）→ 实现「有审批优先审批卡」的二选一，杜绝多气泡重叠。
 
-/** 浮层样式：抄 bubble.ts 的白泡+软糖体系数，全部随 --dsh-pet-size（宠物尺寸，pet root 自带）缩放 */
+/** 浮层样式：白泡+软糖体系数随 --dsh-pet-size（读自主宠物 root 的 CSS 变量）缩放 */
 const alertCss = [
-  '.dsh-pet-alerts{position:absolute;left:50%;transform:translateX(-50%);' +
-    'bottom:calc(100% - var(--dsh-pet-size)*0.108);' + // 与 .dsh-pet-bubble 完全同款：悬宠物头顶向上长
-    'z-index:5;display:flex;flex-direction:column;gap:calc(var(--dsh-pet-size)*0.014);' +
+  '.dsh-pet-alerts{position:fixed;z-index:41;display:flex;flex-direction:column;gap:calc(var(--dsh-pet-size)*0.014);' +
     'min-width:calc(var(--dsh-pet-size)*0.26);max-width:calc(var(--dsh-pet-size)*0.5);pointer-events:none;' +
     'font-family:"ShangshouSoftCandy","Yuanti SC","YouYuan","幼圆","Comic Sans MS","PingFang SC","Microsoft YaHei",sans-serif}',
+  '.dsh-pet-alerts[hidden]{display:none}',
+  // 有审批时藏掉宠物自身的全部气泡（余额/碎碎念/work-status），审批卡独占头顶
+  '.dsh-pet-root[data-dsh-pet-alerts] .dsh-pet-bubble{display:none!important}',
   // 行卡片：白泡 + 悬浮反馈；整行点击跳会话（pointer-events 从容器 none 里单独放行）
   '.dsh-pet-alert-row{pointer-events:auto;cursor:pointer;background:rgba(255,255,255,.92);color:#2b2b2b;' +
     'border-radius:calc(var(--dsh-pet-size)*0.035);padding:calc(var(--dsh-pet-size)*0.018) calc(var(--dsh-pet-size)*0.028);' +
@@ -120,29 +124,41 @@ function injectAlertCss(): void {
   document.head.appendChild(tag);
 }
 
-/** 主宠物容器选择器：PetMulti 渲染多个 .dsh-pet-root，只挂一份到第一个（主宠物） */
+/** 主宠物容器选择器：PetMulti 渲染多个 .dsh-pet-root，只跟第一个（主宠物） */
 const PET_ROOT_SELECTOR = '.dsh-pet-root';
 
-/** 确保浮层挂在主宠物容器内：容器未出现时兜底挂 body（下一拍重挂），已挂进容器则不动 */
-function mountAlertsRoot(root: HTMLElement): void {
-  const host = document.querySelector<HTMLElement>(PET_ROOT_SELECTOR);
-  if (host) {
-    if (root.parentElement !== host) {
-      injectAlertCss(); // 首次真正挂载时才注入样式
-      host.appendChild(root); // 含「兜底挂在 body」时重挂进容器
-    }
-    return;
-  }
-  if (!root.isConnected && document.body) {
-    injectAlertCss();
-    document.body.appendChild(root); // 宠物容器尚未渲染：临时兜底
-  }
-}
-
 function createAlertsRoot(): HTMLElement {
+  injectAlertCss();
   const root = document.createElement('div');
   root.className = 'dsh-pet-alerts';
+  root.hidden = true; // 无审批行时隐藏，不挡交互
+  document.body.appendChild(root);
   return root;
+}
+
+/** 读取主宠物 root（用于取 CSS 变量与 rect）；不存在返回 null */
+function petRoot(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(PET_ROOT_SELECTOR);
+}
+
+/** 把浮层像素定位到主宠物盒顶正上方居中（钳在视口内）；宠物未渲染则保持隐藏态由轮询重试 */
+function placeAlerts(overlay: HTMLElement): void {
+  const host = petRoot();
+  if (!host) return;
+  const r = host.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) return;
+  const w = overlay.offsetWidth || Math.max(120, r.width * 0.26);
+  const h = overlay.offsetHeight;
+  overlay.style.left = Math.max(8, Math.round(r.left + r.width / 2 - w / 2)) + 'px';
+  overlay.style.top = Math.max(8, Math.round(r.top - h - 10)) + 'px';
+}
+
+/** 有审批时藏掉主宠物内部所有气泡（二选一）；无则还原 */
+function setPetBubblesHidden(hidden: boolean): void {
+  const host = petRoot();
+  if (!host) return;
+  if (hidden) host.setAttribute('data-dsh-pet-alerts', '');
+  else host.removeAttribute('data-dsh-pet-alerts');
 }
 
 /** 行列表渲染：白泡卡片，整行点击 → 切会话 */
@@ -204,25 +220,22 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
   };
 
   const render = (): void => {
-    // 每次渲染都确保浮层挂进主宠物容器（宠物容器 React 重建后自动重挂）
-    mountAlertsRoot(root);
     const pending = uiSession.pendingInteractions?.getSnapshot?.() as ReadonlyMap<string, PendingEntry> | undefined;
     const list = sessions.list?.getSnapshot?.() as SessionListStateLike | undefined;
     const rows = deriveAlerts(pending ?? new Map(), list ?? {});
     renderAlerts(root, rows, openSession);
     syncTitleBadge(rows.length);
+    // 有审批行 → 显示浮层并贴到宠物头顶，藏掉宠物自身气泡（二选一）；无 → 隐藏还原
+    root.hidden = rows.length === 0;
+    setPetBubblesHidden(rows.length > 0);
+    if (rows.length > 0) placeAlerts(root);
   };
 
   render(); // 首帧（页面加载即生效：已挂着的审批立即可见）
-  // 宠物容器渲染晚于插件 apply（React 异步挂载）：轮询重挂，直到确认挂进宠物容器即停
-  const mountTimer = window.setInterval(() => {
-    const host = document.querySelector<HTMLElement>(PET_ROOT_SELECTOR);
-    if (host && root.parentElement === host) {
-      window.clearInterval(mountTimer);
-      return;
-    }
-    mountAlertsRoot(root);
-  }, 1000);
+  // 跟随宠物移动/窗口变化：每拍重算浮层像素位置（宠物 root 出现前的空转无害）
+  const posTimer = window.setInterval(() => {
+    if (!root.hidden) placeAlerts(root);
+  }, 500);
   const disposePending = uiSession.pendingInteractions.subscribe(() => render());
   const disposeList = sessions.list.subscribe(() => render());
   signal.addEventListener(
@@ -230,7 +243,8 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
     () => {
       disposePending?.();
       disposeList?.();
-      window.clearInterval(mountTimer);
+      window.clearInterval(posTimer);
+      setPetBubblesHidden(false);
       root.remove();
     },
     { once: true },
