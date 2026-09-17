@@ -244,8 +244,10 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
   };
 
   render(); // 首帧（页面加载即生效：已挂着的审批立即可见）
-  // 跟随宠物移动/窗口变化：每拍重算浮层像素位置（宠物 root 出现前的空转无害）
+  // 跟随宠物移动/窗口变化：每拍重算浮层像素位置（宠物 root 出现前的空转无害）。
+  // 同拍双向同步 data-dsh-pet-alerts：防订阅通知缺位导致隐藏属性卡死（气泡全哑的兜底）
   const posTimer = window.setInterval(() => {
+    setPetBubblesHidden(!root.hidden);
     if (!root.hidden) placeAlerts(root);
   }, 500);
   const disposePending = uiSession.pendingInteractions.subscribe(() => render());
