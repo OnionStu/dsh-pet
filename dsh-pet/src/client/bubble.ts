@@ -34,10 +34,10 @@ const bubbleCss = [
     'transform:translateX(-50%);border:calc(var(--dsh-pet-size)*0.017) solid transparent;' +
     'border-top-color:rgba(255,255,255,.92);border-bottom:none}',
   '.dsh-pet-bubble.is-on{opacity:1}',
-  // 同屏互斥：宠物头顶锚点只有一个，余额/碎碎念/work-status 气泡同时点亮会叠成一团
-  // （余额提示常驻 + 工作状态 10s 停留最易撞车）。把「后面还有 is-on 兄弟」的气泡淡出，
-  // 只留 DOM 顺序最后一个（work-status > 碎碎念 > 余额），不改 React 渲染逻辑。
-  '.dsh-pet-bubble.is-on:has(~ .dsh-pet-bubble.is-on){opacity:0}',
+  // 同屏互斥不在样式层做：work-status 常驻气泡（waiting 档常亮）位于 DOM 最后，
+  // 「:has 最后一个赢」会把后点亮的显式气泡（余额/碎碎念）永久压没（实测回归）。
+  // 正确语义在 pet.ts 渲染层做状态互斥：余额 > 碎碎念 > work-status——显式触发的
+  // 临时气泡优先点亮并让 work 让位，10s 收起后 work 自动恢复。
   // 碎碎念变体：字号缩到余额气泡的 0.75（0.0455→0.034）、取消 nowrap 允许换行、
   // 宽度随文字数量自适应（短句窄框、长句封顶绕行），高度随行数自然增长
   '.dsh-pet-bubble.dsh-pet-whisper{font-size:calc(var(--dsh-pet-size)*0.034);' +

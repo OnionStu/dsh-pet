@@ -1397,9 +1397,16 @@ export function makePetUI(rt: {
         // 见上头 useEffect 的 319 行门控）；whisperText 只由 triggerWhisper 设置——
         // 自动轮询被门控后不会触发，所以这里任何说话气泡（碎碎念/对话回复）都照常渲染。
         // image 为该次配图（碎碎念/对话配图开关开启时由 host 抽定/模型选定）
-        whisperText ? h(WhisperBubble, { text: whisperText, image: whisperImage, on: whisperBubbleOn }) : null,
+        // 显式气泡优先让位（同屏互斥，共享锚点不叠罗汉）：余额/碎碎念点亮时，work-status
+        // 常驻气泡熄灭让位；显式气泡收起（10s 定时）后自动恢复——waiting 档 work 气泡
+        // 常亮的用户几乎同时触发 /balance/碎碎念时，必须看到的是刚点的那个。
+        whisperText
+          ? h(WhisperBubble, { text: whisperText, image: whisperImage, on: whisperBubbleOn && !bubbleOn })
+          : null,
         // 工作状态气泡（仅启用工作状态联动的宠物渲染；文本 = 任务详情优先，状态文案兜底）
-        workText && cfg.workStatusEnabled ? h(WhisperBubble, { text: workText, on: workBubbleOn }) : null,
+        workText && cfg.workStatusEnabled
+          ? h(WhisperBubble, { text: workText, on: workBubbleOn && !bubbleOn && !whisperBubbleOn })
+          : null,
         h('div', {
           ref: stageRef,
           className: 'dsh-pet-stage',
