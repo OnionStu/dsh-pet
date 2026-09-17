@@ -96,7 +96,7 @@ function syncTitleBadge(count: number): void {
 /** 浮层样式：白泡+软糖体系数随 --dsh-pet-size（读自主宠物 root 的 CSS 变量）缩放 */
 const alertCss = [
   '.dsh-pet-alerts{position:fixed;z-index:41;display:flex;flex-direction:column;gap:calc(var(--dsh-pet-size)*0.014);' +
-    'min-width:calc(var(--dsh-pet-size)*0.26);max-width:calc(var(--dsh-pet-size)*0.5);pointer-events:none;' +
+    'min-width:calc(var(--dsh-pet-size)*0.26);max-width:calc(var(--dsh-pet-size)*0.7);pointer-events:none;' +
     'font-family:"ShangshouSoftCandy","Yuanti SC","YouYuan","幼圆","Comic Sans MS","PingFang SC","Microsoft YaHei",sans-serif}',
   '.dsh-pet-alerts[hidden]{display:none}',
   // 有审批时藏掉宠物自身的全部气泡（余额/碎碎念/work-status），审批卡独占头顶
@@ -109,12 +109,13 @@ const alertCss = [
   '.dsh-pet-alert-row{pointer-events:auto;cursor:pointer;background:rgba(255,255,255,.92);color:#2b2b2b;' +
     'border-radius:calc(var(--dsh-pet-size)*0.035);padding:calc(var(--dsh-pet-size)*0.018) calc(var(--dsh-pet-size)*0.028);' +
     'box-shadow:0 calc(var(--dsh-pet-size)*0.009) calc(var(--dsh-pet-size)*0.035) rgba(0,0,0,.14),0 1px 3px rgba(0,0,0,.08);' +
-    'backdrop-filter:blur(6px);max-width:calc(var(--dsh-pet-size)*0.5);overflow:hidden;transition:background .15s ease}',
+    'backdrop-filter:blur(6px);max-width:calc(var(--dsh-pet-size)*0.7);overflow:hidden;transition:background .15s ease}',
   '.dsh-pet-alert-row:hover{background:rgba(255,255,255,.99)}',
-  '.dsh-pet-alert-row .dsh-pet-alert-label{font-size:calc(var(--dsh-pet-size)*0.034);color:rgba(43,43,43,.62);' +
-    'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:calc(var(--dsh-pet-size)*0.006)}',
-  '.dsh-pet-alert-row .dsh-pet-alert-text{font-size:calc(var(--dsh-pet-size)*0.042);line-height:1.45;' +
-    'white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+  // 会话标题/审批内容允许换行（碎碎念变体同款）：截断看不清，宁可多占一行也要读全
+  '.dsh-pet-alert-row .dsh-pet-alert-label{font-size:calc(var(--dsh-pet-size)*0.036);color:rgba(43,43,43,.62);' +
+    'white-space:normal;overflow-wrap:anywhere;margin-bottom:calc(var(--dsh-pet-size)*0.006)}',
+  '.dsh-pet-alert-row .dsh-pet-alert-text{font-size:calc(var(--dsh-pet-size)*0.0455);line-height:1.5;' +
+    'white-space:normal;overflow-wrap:anywhere}',
   '.dsh-pet-alert-row .dsh-pet-alert-dot{color:#e53935;margin-right:calc(var(--dsh-pet-size)*0.012)}',
 ].join('\n');
 
