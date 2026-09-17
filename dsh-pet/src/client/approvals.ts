@@ -101,6 +101,10 @@ const alertCss = [
   '.dsh-pet-alerts[hidden]{display:none}',
   // 有审批时藏掉宠物自身的全部气泡（余额/碎碎念/work-status），审批卡独占头顶
   '.dsh-pet-root[data-dsh-pet-alerts] .dsh-pet-bubble{display:none!important}',
+  // 底部小尾巴指向下方宠物（与 bubble.ts 同款三角）
+  '.dsh-pet-alerts::after{content:"";position:absolute;left:50%;bottom:calc(var(--dsh-pet-size)*-0.017);' +
+    'transform:translateX(-50%);border:calc(var(--dsh-pet-size)*0.017) solid transparent;' +
+    'border-top-color:rgba(255,255,255,.92);border-bottom:none}',
   // 行卡片：白泡 + 悬浮反馈；整行点击跳会话（pointer-events 从容器 none 里单独放行）
   '.dsh-pet-alert-row{pointer-events:auto;cursor:pointer;background:rgba(255,255,255,.92);color:#2b2b2b;' +
     'border-radius:calc(var(--dsh-pet-size)*0.035);padding:calc(var(--dsh-pet-size)*0.018) calc(var(--dsh-pet-size)*0.028);' +
@@ -141,7 +145,10 @@ function petRoot(): HTMLElement | null {
   return document.querySelector<HTMLElement>(PET_ROOT_SELECTOR);
 }
 
-/** 把浮层像素定位到主宠物盒顶正上方居中（钳在视口内）；宠物未渲染则保持隐藏态由轮询重试 */
+/** 把浮层像素定位到主宠物头顶（与 .dsh-pet-bubble 同款语义：底边锚在 stage 顶下方
+ *  0.108*size 处向上长——气泡落在宠物头部上方区域，不顶出宠物盒/视口）；
+ *  宠物未渲染则保持隐藏态由轮询重试。
+ *  root 高 = size*9/16 → 0.108*size = 0.192*root 高。 */
 function placeAlerts(overlay: HTMLElement): void {
   const host = petRoot();
   if (!host) return;
@@ -150,7 +157,7 @@ function placeAlerts(overlay: HTMLElement): void {
   const w = overlay.offsetWidth || Math.max(120, r.width * 0.26);
   const h = overlay.offsetHeight;
   overlay.style.left = Math.max(8, Math.round(r.left + r.width / 2 - w / 2)) + 'px';
-  overlay.style.top = Math.max(8, Math.round(r.top - h - 10)) + 'px';
+  overlay.style.top = Math.max(8, Math.round(r.top + r.height * 0.192 - h)) + 'px';
 }
 
 /** 有审批时藏掉主宠物内部所有气泡（二选一）；无则还原 */
