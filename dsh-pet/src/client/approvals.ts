@@ -148,12 +148,16 @@ function petRoot(): HTMLElement | null {
 /** 把浮层像素定位到主宠物头顶（与 .dsh-pet-bubble 同款语义：底边锚在 stage 顶下方
  *  0.108*size 处向上长——气泡落在宠物头部上方区域，不顶出宠物盒/视口）；
  *  宠物未渲染则保持隐藏态由轮询重试。
- *  root 高 = size*9/16 → 0.108*size = 0.192*root 高。 */
+ *  root 高 = size*9/16 → 0.108*size = 0.192*root 高。
+ *  注意：浮层在 body 级读不到 pet root 的 --dsh-pet-size（CSS 变量作用域），
+ *  必须先显式拷贝该变量到浮层，否则全部 calc() 缩放（圆角/尾巴/宽度/字号）失效。 */
 function placeAlerts(overlay: HTMLElement): void {
   const host = petRoot();
   if (!host) return;
   const r = host.getBoundingClientRect();
   if (r.width === 0 || r.height === 0) return;
+  const size = parseFloat(getComputedStyle(host).getPropertyValue('--dsh-pet-size')) || r.width;
+  if (size > 0) overlay.style.setProperty('--dsh-pet-size', size + 'px');
   const w = overlay.offsetWidth || Math.max(120, r.width * 0.26);
   const h = overlay.offsetHeight;
   overlay.style.left = Math.max(8, Math.round(r.left + r.width / 2 - w / 2)) + 'px';
