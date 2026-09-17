@@ -146,12 +146,10 @@ function petRoot(): HTMLElement | null {
   return document.querySelector<HTMLElement>(PET_ROOT_SELECTOR);
 }
 
-/** 把浮层像素定位到主宠物头顶（与 .dsh-pet-bubble 同款语义：底边锚在 stage 顶下方
- *  0.108*size 处向上长——气泡落在宠物头部上方区域，不顶出宠物盒/视口）；
- *  宠物未渲染则保持隐藏态由轮询重试。
- *  root 高 = size*9/16 → 0.108*size = 0.192*root 高。
- *  注意：浮层在 body 级读不到 pet root 的 --dsh-pet-size（CSS 变量作用域），
- *  必须先显式拷贝该变量到浮层，否则全部 calc() 缩放（圆角/尾巴/宽度/字号）失效。 */
+/** 把浮层像素定位到主宠物头顶：底边贴宠物盒顶（整个卡悬在头顶上方，不遮脸；
+ *  尾巴尖向下探入 ~8px 正好指向宠物）。work 气泡单行 ~50px 可以底边落在盒顶下
+ *  50px 处，但审批卡两行更高，同款底边锚定会压住宠物头（实测「框有点偏下」），
+ *  故审批卡整体上移：top = 盒顶 - 卡高。宠物未渲染则保持隐藏态由轮询重试。 */
 function placeAlerts(overlay: HTMLElement): void {
   const host = petRoot();
   if (!host) return;
@@ -162,7 +160,7 @@ function placeAlerts(overlay: HTMLElement): void {
   const w = overlay.offsetWidth || Math.max(120, r.width * 0.26);
   const h = overlay.offsetHeight;
   overlay.style.left = Math.max(8, Math.round(r.left + r.width / 2 - w / 2)) + 'px';
-  overlay.style.top = Math.max(8, Math.round(r.top + r.height * 0.192 - h)) + 'px';
+  overlay.style.top = Math.max(8, Math.round(r.top - h)) + 'px';
 }
 
 /** 有审批时藏掉主宠物内部所有气泡（二选一）；无则还原 */
