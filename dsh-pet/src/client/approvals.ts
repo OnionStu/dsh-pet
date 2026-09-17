@@ -91,10 +91,11 @@ function syncTitleBadge(count: number): void {
 const alertCss = [
   '.dsh-pet-alerts{position:fixed;z-index:41;display:flex;flex-direction:column;gap:calc(var(--sz)*0.014);' +
     'min-width:calc(var(--sz)*0.26);max-width:calc(var(--sz)*0.5);pointer-events:none;' +
+    // 底部锚在宠物盒顶上方（悬头顶、向上长，与 work-status 气泡同语义；四角同一公式：
+    // 盒顶距视口底 = 100vh - my - h，气泡底再往上让出一点空隙）
+    'bottom:calc(100vh - var(--my) - var(--h) - var(--sz)*0.02);' +
     'font-family:"ShangshouSoftCandy","Yuanti SC","YouYuan","幼圆","Comic Sans MS","PingFang SC","Microsoft YaHei",sans-serif}',
-  // 宠物盒高 = size*9/16；气泡悬在盒子正上方：top 角落向下长、bottom 角落向上长（避免顶出视口）
-  '.dsh-pet-alerts[data-corner="top-right"],.dsh-pet-alerts[data-corner="top-left"]{top:calc(var(--my) + var(--h) + var(--sz)*0.02)}',
-  '.dsh-pet-alerts[data-corner="bottom-right"],.dsh-pet-alerts[data-corner="bottom-left"]{bottom:calc(100vh - var(--my) - var(--h) - var(--sz)*0.02)}',
+  // corner 只决定水平贴边
   '.dsh-pet-alerts[data-corner="top-right"],.dsh-pet-alerts[data-corner="bottom-right"]{right:var(--mx)}',
   '.dsh-pet-alerts[data-corner="top-left"],.dsh-pet-alerts[data-corner="bottom-left"]{left:var(--mx)}',
   // 行卡片：白泡 + 悬浮反馈；整行点击跳会话
