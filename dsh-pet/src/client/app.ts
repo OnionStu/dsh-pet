@@ -4,6 +4,7 @@
 import { makePetUI } from './pet';
 import { makePetConfigSection, NS, zh, en, petBridge } from './settings';
 import { startNotify } from './notify';
+import { startApprovalAlerts } from './approvals';
 import type * as ReactNS from 'react';
 
 /**
@@ -25,7 +26,9 @@ export function makeFactory(): (require: (mod: string) => any) => any {
     const name = 'pet';
     // commandUi 写成服务依赖（与官方 client-ui-permission-presets 的写法一致）：
     // 让 cordis 等「/」命令入口服务就绪后才 apply 本插件，保证 /pet 装饰必然注册成功。
-    const inject = ['slots', 'locale', 'connection', 'remote', 'remote.commands', 'commandUi'];
+    // uiSession/sessions：跨会话审批提醒的数据源（pendingInteractions + 会话列表/跳转），
+    // 声明为服务依赖保证 apply 时两个服务已就绪。
+    const inject = ['slots', 'locale', 'connection', 'remote', 'remote.commands', 'commandUi', 'uiSession', 'sessions'];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- DSH 注入的 ctx（locale/slots/webServer 等 service 无静态类型）
     function apply(ctx: any) {
       // 本地化字典（设置页文案）
@@ -35,11 +38,21 @@ export function makeFactory(): (require: (mod: string) => any) => any {
       // 系统通知：host 侧监听 DSH 宿主事件生成通知帧（/dsh-pet-7340/notify），本引擎轮询拉取。
       // 不再依赖浏览器 connection 事件流（DSH 0.1.5 删除了 api.events.mux/host）——
       // 启动仅需 AbortSignal，host 端点缺失时轮询静默失败，不影响页面其余功能。
+      // ctx 注入跨会话归属：帧带 sessionId 且不属于当前会话时，即使页面聚焦也弹 toast（点击可跳会话）。
       ctx.effect(() => {
         const ac = new AbortController();
-        void startNotify(ac.signal);
+        void startNotify(ctx, ac.signal);
         return () => ac.abort();
       }, 'dsh-pet: notifications');
+
+      // 跨会话审批提醒：订阅 uiSession.pendingInteractions + sessions.list，把「别的会话挂着
+      // 待审批/待选择」渲染成宠物角落的浮层气泡卡（点击切会话）+ 标签页 [N 待审批] 角标。
+      // 纯 client 数据源（零 host 改动、零新事件源）；uiSession/sessions 已声明为服务依赖。
+      ctx.effect(() => {
+        const ac = new AbortController();
+        startApprovalAlerts(ctx, ac.signal);
+        return () => ac.abort();
+      }, 'dsh-pet: approval alerts');
 
       // /pet 选择框：裸输 /pet 回车或菜单点选时弹出桌宠列表，选中后提交 /pet <id> 由 host 命令落地。
       // commandUi 已声明为服务依赖（上方 inject）：插件只在「/」命令服务就绪后 apply，

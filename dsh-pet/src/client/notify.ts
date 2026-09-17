@@ -51,6 +51,23 @@ function isPageActive(): boolean {
   return pageVisible && pageFocused;
 }
 
+// ---------- 跨会话归属：ctx 由 startNotify 注入（模块级单实例；settings 的测试通知不经此路径） ----------
+/** 插件 ctx 的窄接口（sessions 列表读当前会话 / open 跳转；app.ts 里 ctx 本身是 any，这里只描述用到的面） */
+interface NotifyCtx {
+  sessions?: {
+    list?: { getSnapshot?: () => { current?: string } };
+    open?: (sessionId: string) => void;
+  };
+}
+let uiCtx: NotifyCtx | null = null;
+
+/** 帧所属会话是否为「非当前会话」（无归属 / 归属=当前会话 → false） */
+function isForeignSession(sessionId?: string): boolean {
+  if (typeof sessionId !== 'string' || sessionId === '') return false;
+  const current = uiCtx?.sessions?.list?.getSnapshot?.().current;
+  return typeof current === 'string' && sessionId !== current;
+}
+
 // ---------- 发送 ----------
 
 /** 图标 URL（pic 路由由宿主提供：assets/pic → /dsh-pet-7340/pic/<file>） */
@@ -69,20 +86,30 @@ export const NOTIFY_ICONS = {
 /** 当前生效的总开关（运行中可被 reloadNotifications 更新——设置页保存后即时生效，无需刷新） */
 let notifyEnabled = true;
 
-/** 发一条系统通知；总开关关闭 / 环境不支持 / 未授权 / 聚焦本页 时静默跳过。
+/** 发一条系统通知；总开关关闭 / 环境不支持 / 未授权 / 聚焦本页（且非跨会话审批） 时静默跳过。
+ * 跨会话审批/问答帧（sessionId 归属别的会话）：**即使页面聚焦也弹**——别的会话挂审批，
+ * 当前页怎么都该知道（旧「聚焦一刀切」正是用户痛点）。点击通知 = 跳到帧所属会话 + 聚焦回页面。
  * 日志（【弹窗】类型：内容）在门之后记录——只有真正发出通知时才记，被门拦下的触发不产生日志。 */
-function toast(title: string, body?: string, icon?: string): void {
+function toast(title: string, body?: string, icon?: string, sessionId?: string): void {
   if (!notifyEnabled) return;
-  if (isPageActive()) return;
+  const foreign = isForeignSession(sessionId); // 跨会话审批/问答：聚焦也弹
+  if (!foreign && isPageActive()) return;
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   console.log('【弹窗】' + title + (body ? '：' + body : ''));
   try {
     const opts: NotificationOptions = {};
     if (body) opts.body = truncate(body);
     if (icon) opts.icon = icon;
-    // 点击通知：聚焦回 DSH 页面并关闭该通知（图标加载失败只降级为无图标，绝不关闭弹窗）
+    // 点击通知：跳到帧所属会话（若有）→ 聚焦回 DSH 页面并关闭该通知（图标加载失败只降级为无图标，绝不关闭弹窗）
     const n = new Notification(title, opts);
     n.onclick = () => {
+      if (foreign && sessionId && typeof uiCtx?.sessions?.open === 'function') {
+        try {
+          uiCtx.sessions.open(sessionId);
+        } catch {
+          /* 会话可能已关闭/不存在：降级为仅聚焦回页面 */
+        }
+      }
       window.focus();
       n.close();
     };
@@ -95,7 +122,7 @@ function toast(title: string, body?: string, icon?: string): void {
 function toastFrame(frame: NotifyFrame): void {
   const t = frameToToast(frame);
   if (!t) return;
-  toast(t.title, t.body, PIC(t.icon));
+  toast(t.title, t.body, PIC(t.icon), t.sessionId);
 }
 
 /** 申请浏览器通知权限的结果：ok=true 已授予；ok=false 带失败原因（供设置页红字展示） */
@@ -173,10 +200,13 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 /**
  * 启动系统通知引擎。常驻（开关在触发时按实时值判断，不用重启）；
  * 总开关开启且权限未决定时兜底申请一次权限。
+ * ctx：注入跨会话归属能力（读当前会话 / 点击跳转）——帧带 sessionId 且不属于当前会话时，
+ * 即使页面聚焦也弹 toast（这是跨会话审批提醒的核心场景）。
  * 1s 轮询 /dsh-pet-7340/notify 拉增量帧：首拉只记基线 seq 不弹历史（页面加载不重放旧通知），
  * 之后每次递增拉新帧并逐条 toast；轮询失败静默，下轮重试；信号中止即退出。
  */
-export async function startNotify(signal: AbortSignal): Promise<void> {
+export async function startNotify(ctx: unknown, signal: AbortSignal): Promise<void> {
+  uiCtx = (ctx ?? null) as NotifyCtx | null;
   notifyEnabled = await readNotificationsEnabled();
   if (typeof Notification !== 'undefined' && notifyEnabled && Notification.permission === 'default') {
     void requestNotificationPermission(); // 兜底申请（无手势时浏览器可能压制；真正的申请在设置页开关/按钮点击处）
