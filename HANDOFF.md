@@ -82,7 +82,7 @@ DSH dist 根：`<全局 node_modules>/@deepseek-ai/dsh/node_modules/@deepseek-ai
 - ③ **`:has()` 选择器做优先级是陷阱**：常驻点亮 + DOM 靠后的元素会把"最后一个赢"规则变成永久压制。时间性优先级只能在状态层做。
 - ④ 宿主重启规则（AGENTS.md）：agent 绝不重启 3080 宿主；重启日志只有「stopping」没「started」时仍要探活确认真实状态（实测端口有响应、改动已生效）。
 - ⑤ 像素级视觉对齐**别信纸面公式**：直接 `getBoundingClientRect` 测参照物节点对齐实测值，一轮收敛（六轮公式拉锯的教训）。
-- ⑥ 排查"气泡全哑"先看是否有**长期被遗忘的挂起审批/问题**（审批优先隐藏是设计）；视觉桥（modlens/describe_image）超时时可 pip venv + Pillow 本地像素分析。
+- ⑥ 排查"气泡全哑"先看是否有**长期被遗忘的挂起审批/问题**（审批优先隐藏是设计）；视觉桥（modlens/describe_image）超时时可 pip venv + Pillow 本地像素分析——完整链路/降级策略/误判教训见 `IMAGE-INSPECTION.md`。
 - ⑦ 质量门：`npm run typecheck && npm run lint && npx prettier --check && npm test（178/179 基线）&& npm run bundle`（tsdown → gitignored `lib/`，浏览器硬刷新吃 client 半改动）。
 
 ## 后续维护启动清单
