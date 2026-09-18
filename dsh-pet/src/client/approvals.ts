@@ -162,7 +162,13 @@ function placeAlerts(overlay: HTMLElement): void {
   const centered = r.left + r.width / 2 - w / 2;
   const leftMax = Math.max(8, window.innerWidth - w - 8);
   overlay.style.left = Math.round(Math.min(leftMax, Math.max(8, centered))) + 'px';
-  overlay.style.top = Math.max(8, Math.round(r.top + r.height * 0.192 - h)) + 'px';
+  // 目标底边 = 原生气泡的实测 rect.bottom（.dsh-pet-bubble 未点亮只是 opacity:0，
+  // 布局与位置仍在，可测）——对齐真实节点比复算 0.192*root 公式可靠（用户对比图实测
+  // 纸面公式与原生气泡仍有肉眼可见高差）。原生气泡不可测时回退公式值。
+  const native = host.querySelector<HTMLElement>('.dsh-pet-bubble');
+  const nb = native?.getBoundingClientRect();
+  const bottom = nb && nb.height > 0 && nb.bottom > 0 ? nb.bottom : r.top + r.height * 0.192;
+  overlay.style.top = Math.max(8, Math.round(bottom - h)) + 'px';
 }
 
 /** 有审批时藏掉主宠物内部所有气泡（二选一）；无则还原 */
