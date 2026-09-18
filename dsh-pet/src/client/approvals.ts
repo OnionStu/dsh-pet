@@ -146,11 +146,10 @@ function petRoot(): HTMLElement | null {
   return document.querySelector<HTMLElement>(PET_ROOT_SELECTOR);
 }
 
-/** 把浮层像素定位到主宠物头顶上方：底边探入盒顶 5% 尺寸（实测「贴盒顶」时尾巴尖
- *  与呆毛之间空隙偏大、入盒 50px 时压脸，取折中让尾巴轻触头顶）。水平方向以宠物
- *  中线居中，但左右两侧都 clamp 8px——宠物被拖到屏幕边时卡片不裁出视口（实测右侧
- *  裁切）。顶部空间不足时 clamp 8 兜底（把宠物拖离视口顶即可完整显示）。
- *  宠物未渲染则保持隐藏态由轮询重试。 */
+/** 把浮层像素定位到与宠物碎碎念/余额气泡同高（用户多轮实测后拍板「跟碎碎念的高度
+ *  一样」）：复刻 .dsh-pet-bubble 的 bottom:calc(100% - size*0.108) 锚点——底边
+ *  探入盒顶 10.8% 尺寸（root 高 = 9/16 size，故 = 0.192*root 高）。左右两侧 clamp
+ *  8px 防贴边裁切；顶部空间不足时 clamp 8 兜底。宠物未渲染则轮询重试。 */
 function placeAlerts(overlay: HTMLElement): void {
   const host = petRoot();
   if (!host) return;
@@ -163,7 +162,7 @@ function placeAlerts(overlay: HTMLElement): void {
   const centered = r.left + r.width / 2 - w / 2;
   const leftMax = Math.max(8, window.innerWidth - w - 8);
   overlay.style.left = Math.round(Math.min(leftMax, Math.max(8, centered))) + 'px';
-  overlay.style.top = Math.max(8, Math.round(r.top - h + size * 0.05)) + 'px';
+  overlay.style.top = Math.max(8, Math.round(r.top + r.height * 0.192 - h)) + 'px';
 }
 
 /** 有审批时藏掉主宠物内部所有气泡（二选一）；无则还原 */
