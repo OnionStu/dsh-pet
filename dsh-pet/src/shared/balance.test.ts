@@ -19,7 +19,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { balanceBubbleView, decideBalanceNotice, type BalanceState } from './balance.ts';
+import {
+  balanceBubbleNeedsWrap,
+  balanceBubbleView,
+  balancePercent,
+  decideBalanceNotice,
+  fetchBalanceState,
+  formatTokens,
+  type BalanceState,
+} from './balance.ts';
 
 /** 包内文件源码（守卫用；相对 src/shared/ 解析） */
 const readSource = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -81,7 +89,14 @@ describe('balanceBubbleView —— 不可用状态必须给出可读的文字说
     assert.equal(rows[0]?.text, '周额度已用 75%');
     assert.equal(rows[1]?.role, 'sub');
 
-    const ds = balanceBubbleView({ provider: 'deepseek-official', ok: true, kind: 'deepseek', total: '8.79' });
+    // 峰谷档位只对 DeepSeek 官方计价成立 → 由 family 决定（不是按 kind 猜）
+    const ds = balanceBubbleView({
+      provider: 'deepseek-official',
+      family: 'deepseek-official',
+      ok: true,
+      kind: 'balance',
+      total: '8.79',
+    });
     assert.equal(ds[0]?.text, '余额（');
     assert.equal(ds[1]?.role, 'tier'); // 峰/谷随时间变化，这里只钉结构与金额
     assert.equal(ds[2]?.text, '）¥8.79');
@@ -145,5 +160,237 @@ describe('源码守卫 —— 不可用状态不得再被静默丢掉', () => {
       /showBalanceNotice/.test(events) && /showBalanceNotice/.test(sprite),
       '桌面必须有不可用的气泡渲染路径（showBalanceNotice），不能只 console.error',
     );
+  });
+});
+
+// ---------- 换行变体判定（两端同一份）----------
+// 背景：金额气泡新增「今日用量」副行后是**两行**，而余额气泡默认 white-space:nowrap
+// （多行会顶出宠物宽度）。原来两端各自硬编码「不可用才换行」，这次统一成一份判定。
+
+describe('balanceBubbleNeedsWrap —— 换行变体判定', () => {
+  test('不可用状态 → true（多行文字说明）', () => {
+    assert.equal(balanceBubbleNeedsWrap({ provider: 'commandcode', ok: false, reason: 'unsupported' }), true);
+  });
+
+  test('金额 + 今日用量（两行）→ true', () => {
+    assert.equal(
+      balanceBubbleNeedsWrap({
+        provider: 'modlens-moark',
+        family: 'moark',
+        ok: true,
+        kind: 'balance',
+        total: '1255.20',
+        usage: { tokens: <tokens>, calls: 804 },
+      }),
+      true,
+    );
+  });
+
+  test('金额单行（无用量）→ false（保持 nowrap 观感）', () => {
+    assert.equal(
+      balanceBubbleNeedsWrap({
+        provider: 'modlens-moark',
+        family: 'moark',
+        ok: true,
+        kind: 'balance',
+        total: '1255.20',
+      }),
+      false,
+    );
+  });
+
+  test('opencode 的两行（档位 + 重置）→ false（本来就窄，别改观感）', () => {
+    assert.equal(
+      balanceBubbleNeedsWrap({
+        provider: 'opencode-go',
+        ok: true,
+        kind: 'opencode',
+        rolling: 10,
+        weekly: 75,
+        monthly: 20,
+        weeklyResetsAt: '2026-09-20T00:00:00Z',
+      }),
+      false,
+    );
+  });
+});
+
+describe('源码守卫 —— 换行变体判定不得两端各写一份', () => {
+  test('浏览器 overlay：bubble.ts 用 shared 判定，不再写 state.ok 三元', () => {
+    const bubble = readSource('../client/bubble.ts');
+    assert.ok(/balanceBubbleNeedsWrap\(/.test(bubble), '换行变体必须来自 src/shared（两端同一份）');
+    assert.ok(!/state\.ok\s*\?\s*''\s*:/.test(bubble), '金额气泡带用量副行时也是两行：不得再按 state.ok 硬编码换行');
+  });
+
+  test('桌面外壳：成功路径与不可用路径都用 S.balanceBubbleNeedsWrap，不得写死 balanceWrap', () => {
+    const events = readSource('../../runtime/electron-helper/events.js');
+    const hits = events.match(/S\.balanceBubbleNeedsWrap\(/g) ?? [];
+    assert.ok(hits.length >= 2, '两条余额气泡路径都要用同一份判定（当前 ' + hits.length + ' 处）');
+    assert.ok(!/this\.balanceWrap = (true|false);/.test(events), '不得再写死 balanceWrap');
+  });
+});
+// 背景（2026-09-18）：余额数据源新增 moark family（当前默认 provider 是 modlens-moark 包装路由）。
+// 金额型视图因此要能表达两件新事实：
+//   ① 基准（baseline）——档位折算的满额值随探测结果下发，写死 ¥20 会让 ¥1255 的 moark 永远显示「已用 0%」；
+//   ② 今日用量（usage）——气泡在金额下补一行「今日 N tokens · M 次调用」（与另一只宠物同口径）。
+
+/** 临时替换全局 fetch；用完整 Response（shared 侧走真实 fetch 语义） */
+function stubFetchOnce(body: unknown, status = 200): () => void {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify(body), { status })) as typeof globalThis.fetch;
+  return () => {
+    globalThis.fetch = original;
+  };
+}
+
+describe('formatTokens —— zh 紧凑计数（与 dsh-usage 的 note 同口径）', () => {
+  test('万以下原样', () => {
+    assert.equal(formatTokens(9805), '9805');
+    assert.equal(formatTokens(0), '0');
+  });
+
+  test('万位/亿位紧凑成一位小数，整数不带 .0', () => {
+    assert.equal(formatTokens(45123), '4.5万');
+    assert.equal(formatTokens(20000), '2万');
+    assert.equal(formatTokens(<tokens>), '1.1亿');
+  });
+});
+
+describe('余额气泡 —— 金额形态带今日用量行', () => {
+  test('非 DeepSeek 家族：金额单行 + 用量次行（没有峰谷计价，不摆峰/谷）', () => {
+    assert.deepEqual(
+      balanceBubbleView({
+        provider: 'modlens-moark',
+        family: 'moark',
+        ok: true,
+        kind: 'balance',
+        total: '1255.20',
+        baseline: '4000.00',
+        usage: { tokens: <tokens>, calls: 804 },
+      }),
+      [
+        { role: 'label', text: '余额 ¥<金额>' },
+        { role: 'sub', text: '今日 1.1亿 tokens · 804 次调用' },
+      ],
+    );
+  });
+
+  test('DeepSeek 家族：保留峰谷档位（同一条内联）+ 用量次行', () => {
+    const rows = balanceBubbleView({
+      provider: 'deepseek-official',
+      family: 'deepseek-official',
+      ok: true,
+      kind: 'balance',
+      total: '36.04',
+      baseline: '20.00',
+      usage: { tokens: 9805, calls: 12 },
+    });
+    assert.equal(rows[0]?.text, '余额（');
+    assert.equal(rows[1]?.role, 'tier');
+    assert.equal(rows[2]?.text, '）¥<金额>');
+    assert.deepEqual(rows[3], { role: 'sub', text: '今日 9805 tokens · 12 次调用' });
+  });
+
+  test('无用量 → 不出现空行（金额单行）', () => {
+    assert.deepEqual(
+      balanceBubbleView({ provider: 'modlens-moark', family: 'moark', ok: true, kind: 'balance', total: '1255.20' }),
+      [{ role: 'label', text: '余额 ¥<金额>' }],
+    );
+  });
+});
+
+describe('balancePercent —— 基准随探测结果下发', () => {
+  test('moark： ¥<金额>/ 基准 ¥4000 → 已用 68.6%（用写死的 ¥20 会算成 0%）', () => {
+    const p = balancePercent({
+      provider: 'modlens-moark',
+      family: 'moark',
+      ok: true,
+      kind: 'balance',
+      total: '1255.20',
+      baseline: '4000.00',
+    });
+    assert.ok(p !== undefined && Math.abs(p - 68.62) < 0.01, 'p=' + String(p));
+  });
+
+  test('缺基准（老响应）→ 回落 DeepSeek 的 ¥20 基准', () => {
+    const p = balancePercent({ provider: 'deepseek-official', ok: true, kind: 'balance', total: '8.79' });
+    assert.ok(p !== undefined && Math.abs(p - 56.05) < 0.01, 'p=' + String(p));
+  });
+
+  test('余额超过基准（充值后）→ 0%（不出现负值）', () => {
+    assert.equal(
+      balancePercent({
+        provider: 'modlens-moark',
+        family: 'moark',
+        ok: true,
+        kind: 'balance',
+        total: '9999',
+        baseline: '4000',
+      }),
+      0,
+    );
+  });
+});
+
+describe('fetchBalanceState —— 解析 host 扩展字段', () => {
+  test('金额形态：family / baseline / usage 进视图（含来源标记）', async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      provider: 'modlens-moark',
+      family: 'moark',
+      kind: 'balance',
+      source: 'probe',
+      data: { currency: 'CNY', total: '1255.20', baseline: '4000.00' },
+      usage: { tokens: <tokens>, calls: 804, source: 'dsh-usage' },
+    });
+    try {
+      assert.deepEqual(await fetchBalanceState(), {
+        provider: 'modlens-moark',
+        family: 'moark',
+        ok: true,
+        kind: 'balance',
+        currency: 'CNY',
+        total: '1255.20',
+        baseline: '4000.00',
+        usage: { tokens: <tokens>, calls: 804 },
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  test('老响应（kind deepseek、无 family/baseline/usage）仍可解析：family 回落 deepseek-official', async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      provider: 'deepseek-official',
+      kind: 'deepseek',
+      data: { currency: 'CNY', total: '36.04' },
+    });
+    try {
+      const state = await fetchBalanceState();
+      assert.equal(state.ok, true);
+      assert.equal(state.ok && state.kind, 'balance');
+      assert.equal(state.ok && state.family, 'deepseek-official');
+      assert.equal(state.ok && state.usage, undefined);
+    } finally {
+      restore();
+    }
+  });
+
+  test('用量结构非法 → 当作没有（不显示半截数字）', async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      provider: 'modlens-moark',
+      family: 'moark',
+      kind: 'balance',
+      data: { total: '1255.20' },
+      usage: { tokens: 'abc', calls: 0 },
+    });
+    try {
+      const state = await fetchBalanceState();
+      assert.equal(state.ok && state.usage, undefined);
+    } finally {
+      restore();
+    }
   });
 });

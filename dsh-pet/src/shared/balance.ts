@@ -7,9 +7,16 @@
 export interface RawBalanceResult {
   ok: boolean;
   provider?: string;
-  kind?: 'opencode' | 'deepseek';
+  /** 归一化后的服务商 family（host 下发，如 modlens-moark → moark）；老响应缺失时按 provider 兜底 */
+  family?: string;
+  /** 金额形态为 'balance'；'deepseek' 是老响应（等价于 balance + deepseek-official family） */
+  kind?: 'opencode' | 'balance' | 'deepseek';
   reason?: string;
   message?: string;
+  /** 余额来源：probe = host 自探测；dsh-usage = 第三方台账兜底（仅供展示/排查，判定逻辑不看它） */
+  source?: string;
+  /** 今日用量（host 合并后下发；可选） */
+  usage?: { tokens?: unknown; calls?: unknown; source?: unknown };
   data?: {
     rolling?: unknown;
     weekly?: unknown;
@@ -21,13 +28,17 @@ export interface RawBalanceResult {
     total?: unknown;
     granted?: unknown;
     toppedUp?: unknown;
+    /** 满额基准（金额型档位折算用，如 moark 的当月总额度 4000） */
+    baseline?: unknown;
   };
 }
 
 /** 已解析的余额视图（展示 + 档位计算用） */
 export interface BalanceView {
   provider: string;
-  kind: 'opencode' | 'deepseek';
+  /** 服务商 family：决定展示差异（如只有 DeepSeek 官方计价才有峰/谷档位） */
+  family?: string;
+  kind: 'opencode' | 'balance';
   ok: true;
   /** opencode：三窗口用量（0-100 数字）+ 各自的重置时间 */
   rolling?: number;
@@ -36,11 +47,15 @@ export interface BalanceView {
   rollingResetsAt?: string;
   weeklyResetsAt?: string;
   monthlyResetsAt?: string;
-  /** deepseek：余额金额（字符串，与接口一致） */
+  /** 金额形态：余额金额（字符串，与接口一致） */
   currency?: string;
   total?: string;
   granted?: string;
   toppedUp?: string;
+  /** 金额形态：满额基准（缺省回落 DEEPSEEK_FULL_BALANCE_CNY，兼容老响应） */
+  baseline?: string;
+  /** 金额形态：今日用量（无记录则缺省；气泡据此决定要不要补一行） */
+  usage?: { tokens: number; calls: number };
 }
 
 /** 无效（不支持/缺凭证/抓取失败）：显式标记，不静默 */
@@ -97,6 +112,7 @@ export async function fetchBalanceState(baseUrl: string = '/dsh-pet-7340/balance
     if (![rolling, weekly, monthly].every(Number.isFinite)) throw new Error('dsh-pet: opencode 百分比非数字');
     return {
       provider,
+      family: familyOf(raw, provider),
       kind: 'opencode',
       ok: true,
       rolling,
@@ -107,20 +123,44 @@ export async function fetchBalanceState(baseUrl: string = '/dsh-pet-7340/balance
       monthlyResetsAt: typeof d.monthlyResetsAt === 'string' ? d.monthlyResetsAt : undefined,
     };
   }
-  if (raw.kind === 'deepseek') {
+  // 金额形态：'balance' 为现契约，'deepseek' 是老响应（等价于 balance + deepseek-official family）
+  if (raw.kind === 'balance' || raw.kind === 'deepseek') {
     const d = raw.data;
-    if (!d || typeof d !== 'object') throw new Error('dsh-pet: deepseek 数据非法');
+    if (!d || typeof d !== 'object') throw new Error('dsh-pet: 余额数据非法');
+    const granted = typeof d.granted === 'string' ? d.granted : undefined;
+    const toppedUp = typeof d.toppedUp === 'string' ? d.toppedUp : undefined;
+    const baseline = typeof d.baseline === 'string' && d.baseline !== '' ? d.baseline : undefined;
+    const usage = parseUsage(raw.usage);
     return {
       provider,
-      kind: 'deepseek',
+      family: familyOf(raw, provider),
+      kind: 'balance',
       ok: true,
       currency: typeof d.currency === 'string' ? d.currency : undefined,
       total: typeof d.total === 'string' ? d.total : undefined,
-      granted: typeof d.granted === 'string' ? d.granted : undefined,
-      toppedUp: typeof d.toppedUp === 'string' ? d.toppedUp : undefined,
+      // 可选字段只在有值时出现：不把 undefined 塞进视图（避免「有键无值」误导消费方）
+      ...(granted !== undefined ? { granted } : {}),
+      ...(toppedUp !== undefined ? { toppedUp } : {}),
+      ...(baseline !== undefined ? { baseline } : {}),
+      ...(usage !== undefined ? { usage } : {}),
     };
   }
   throw new Error('dsh-pet: 余额 kind 非法');
+}
+
+/** family 兜底：host 未下发时按 provider 推断（老 deepseek 响应 → deepseek-official，因为它就是官方计价） */
+function familyOf(raw: RawBalanceResult, provider: string): string {
+  if (typeof raw.family === 'string' && raw.family !== '') return raw.family;
+  return raw.kind === 'deepseek' ? 'deepseek-official' : provider;
+}
+
+/** 今日用量：结构不合法/没有调用 → undefined（宁可少一行，也不显示半截数字） */
+function parseUsage(raw: RawBalanceResult['usage']): { tokens: number; calls: number } | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const tokens = Number(raw.tokens);
+  const calls = Number(raw.calls);
+  if (!Number.isFinite(tokens) || !Number.isFinite(calls) || tokens < 0 || calls <= 0) return undefined;
+  return { tokens, calls };
 }
 
 /** 手动触发计数（/balance 命令 +1；两个平台同样的 1s 轻量轮询语义）。 */
@@ -131,25 +171,38 @@ export async function fetchTriggerCount(baseUrl: string = '/dsh-pet-7340/balance
   return data && typeof data.count === 'number' ? data.count : -1;
 }
 
-/** DeepSeek 满额基准（¥）：余额 ≥ 该值视为 100%（未消耗），余额按比例折算为已用百分比 */
+/** DeepSeek 满额基准（¥）：余额 ≥ 该值视为 100%（未消耗），余额按比例折算为已用百分比。
+ *  host 现在把每个 family 自己的基准随探测结果下发（moark 是当月总额度）；本常量只作
+ *  **老响应/缺基准时**的兜底（历史语义就来自 DeepSeek 官方计价的 ¥20）。 */
 export const DEEPSEEK_FULL_BALANCE_CNY = 20;
 
 /**
  * 事件档位百分比（已用百分比语义：0 = 未消耗，100 = 耗尽）：
  * - opencode：取三窗口最大（风险最高者为准）
- * - deepseek：余额按 DEEPSEEK_FULL_BALANCE_CNY（¥20 = 100%）折算为已用百分比
- *   （余额 20 元 → 0%，10 元 → 50%，0 元 → 100%）
+ * - 金额形态：余额按**该 family 的基准**折算为已用百分比
+ *   （DeepSeek ¥20 = 100%；moark 用探测下发的当月总额度，如 ¥4000）
+ *   余额 ≥ 基准 → 0%（充值后不出现负值）；余额 ≤ 0 → 100%
  */
 export function balancePercent(v: BalanceView): number | undefined {
   if (v.kind === 'opencode') return Math.max(v.rolling ?? 0, v.weekly ?? 0, v.monthly ?? 0);
-  if (v.kind === 'deepseek') {
-    const total = Number(v.total);
-    if (!Number.isFinite(total)) return undefined; // 金额非法（非数字）：不触发（上层校验已兜底，此处双保险）
-    // 负数 = 透支，与 0 等价按「已用完」折算：-0.02 → 剩余 0 → 已用 100%（播「分文不剩」档）
-    const remaining = (Math.max(0, total) / DEEPSEEK_FULL_BALANCE_CNY) * 100; // 剩余百分比 0~100+
-    return Math.max(0, Math.min(100, 100 - remaining)); // 折算为已用百分比
-  }
-  return undefined;
+  const total = Number(v.total);
+  if (!Number.isFinite(total)) return undefined; // 金额非法（非数字）：不触发（上层校验已兜底，此处双保险）
+  const baseline = Number(v.baseline ?? DEEPSEEK_FULL_BALANCE_CNY);
+  if (!Number.isFinite(baseline) || baseline <= 0) return undefined; // 基准非法：宁可不触发，也不算错
+  // 负数 = 透支，与 0 等价按「已用完」折算：-0.02 → 剩余 0 → 已用 100%（播「分文不剩」档）
+  const remaining = (Math.max(0, total) / baseline) * 100; // 剩余百分比 0~100+
+  return Math.max(0, Math.min(100, 100 - remaining)); // 折算为已用百分比
+}
+
+/** token 数紧凑显示（万/亿）：与 dsh-usage 气泡 note 同口径，两个来源的数字才可比 */
+export function formatTokens(count: number): string {
+  const compact = (value: number): string => {
+    const rounded = Math.round(value * 10) / 10;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  };
+  if (count >= 1e8) return compact(count / 1e8) + '亿';
+  if (count >= 1e4) return compact(count / 1e4) + '万';
+  return String(count);
 }
 
 /**
@@ -308,14 +361,40 @@ export function balanceBubbleView(state: BalanceState): BalanceBubbleRow[] {
       }
       return [{ role: 'label', text: '额度数据不可用' }];
     }
-    const tier = deepseekPricingTier();
-    return [
-      { role: 'label', text: '余额（' },
-      { role: 'tier', tier, text: tier === 'peak' ? '峰' : '谷' },
-      { role: 'label', text: '）¥' + (state.total ?? '-') },
-    ];
+    // 金额形态：DeepSeek 官方计价才有峰/谷档位（family 说了算，不按 kind 猜）；
+    // 其余 family（如 moark）只有金额一行，避免摆一个不存在的计价档位。
+    const rows: BalanceBubbleRow[] = [];
+    if (state.family === 'deepseek-official') {
+      const tier = deepseekPricingTier();
+      rows.push(
+        { role: 'label', text: '余额（' },
+        { role: 'tier', tier, text: tier === 'peak' ? '峰' : '谷' },
+        { role: 'label', text: '）¥' + (state.total ?? '-') },
+      );
+    } else {
+      rows.push({ role: 'label', text: '余额 ¥' + (state.total ?? '-') });
+    }
+    // 今日用量：与另一只宠物（dsh-usage 公告）同口径的副行；无记录就不补行（不留空行）
+    if (state.usage) {
+      rows.push({
+        role: 'sub',
+        text: '今日 ' + formatTokens(state.usage.tokens) + ' tokens · ' + state.usage.calls + ' 次调用',
+      });
+    }
+    return rows;
   }
   return unavailableRows(state);
+}
+
+/**
+ * 余额气泡是否需要**换行变体**（浏览器与桌面外壳共用同一份判定）：
+ * - 不可用状态是多行文字说明（默认 nowrap 会顶出宠物宽度）；
+ * - 金额形态带今日用量时也是两行（金额 + 用量），同样需要换行；
+ * - opencode 的两行（档位 + 重置倒计时）本来就窄，保持默认 nowrap，别动它的观感。
+ */
+export function balanceBubbleNeedsWrap(state: BalanceState): boolean {
+  if (!state.ok) return true;
+  return state.kind === 'balance' && balanceBubbleView(state).length > 1;
 }
 
 /** 非 ok 状态「弹不弹文字说明气泡」的判定结果 */

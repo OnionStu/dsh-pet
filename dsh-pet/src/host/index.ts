@@ -55,7 +55,8 @@ import { join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
-import { queryBalance } from './balance';
+import { buildBalancePayload } from './balance-route';
+import { createUsageFold } from './usage-fold';
 import { generateWhisper } from './whisper';
 import { generateChat, type ChatMemoryMessage } from './chat';
 import { pickMeme, readMemePool } from './memes';
@@ -208,6 +209,9 @@ export function apply(ctx: any): void {
   const thumbUserRoot = join(userRoot, 'main-animation');
   // 手动触发计数：/balance 命令 +1，两边（浏览器/桌面）同样的 1s 轮询检测变化后刷新余额（进程内内存态，重启归零）
   let balanceTriggerCount = 0;
+  // 今日用量折叠（/balance 气泡的「今日 N tokens · M 次调用」行）：在下面同一条 session/event 上折叠，
+  // 纯内存（宿主重启归零）——所以 dsh-usage 台账可用时优先用它（见 balance-route.ts 的合并规则）。
+  const usageFold = createUsageFold();
   // 工作状态联动快照（/work-status 端点响应，浏览器 1s 轮询）：state=当前活动状态（null=空闲）、
   // task=当前任务详情、ts=最近变化时间（轮询侧检测变化用）。气泡文案不在此：浏览器读配置
   // events.workStatusTexts（host 不内置文案）。
@@ -699,9 +703,16 @@ export function apply(ctx: any): void {
       if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
       try {
         const sel = ctx.agentDefaultModel.currentSelection();
-        const result = await queryBalance(sel.provider, async (ref) => {
-          const rc = await ctx.credentials.resolve(credentialRef(ref));
-          return rc?.value;
+        // 装配层：自探测（当前服务商，含 modlens-* 包装路由归一化）+ 今日用量（dsh-usage 台账优先、
+        // 本机折叠兜底）+ 自探测不支持时的 dsh-usage 余额快照兜底。规则集中在 balance-route.ts。
+        const result = await buildBalancePayload({
+          provider: sel.provider,
+          port: typeof ctx.webServer?.port === 'number' ? ctx.webServer.port : 0,
+          localUsage: usageFold.today(sel.provider),
+          resolveCredential: async (ref) => {
+            const rc = await ctx.credentials.resolve(credentialRef(ref));
+            return rc?.value;
+          },
         });
         return { kind: 'json', status: 200, obj: result };
       } catch (e) {
@@ -955,6 +966,9 @@ export function apply(ctx: any): void {
           (session as { id?: unknown } | null)?.id ??
           'unknown',
       );
+      // 今日用量折叠（纯内存、与 work-status 同一条事件流）：必须在下面的分支 return 之前调用，
+      // 否则 request/header（记路由）与 assistant/message（记用量）会被后续的早退吞掉。
+      usageFold.observe(sessionId, event);
       if (type === 'todo/write') {
         // 任务文案：仅当会话正是当前展示会话时更新任务详情（否则不打断当前展示）
         if (workStatusBySession.has(sessionId)) {

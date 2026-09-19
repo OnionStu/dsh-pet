@@ -97,7 +97,9 @@ PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state) {
   if (!this.pet.balanceEnabled) return; // 门控与成功路径一致（未启用余额的宠物完全免疫）
   if (!state || state.ok) return;
   this.bubbleOn = true;
-  this.balanceWrap = true; // 文字说明可能多行：renderBubble 据此套用换行变体（默认 nowrap 会顶出宠物宽度）
+  // 换行变体判定统一走 shared（与浏览器同一份）：文字说明恒为 true；金额气泡带「今日用量」副行时
+  // 也是两行，同样要换行——所以这里不写死 true，交给 S.balanceBubbleNeedsWrap。
+  this.balanceWrap = S.balanceBubbleNeedsWrap(state);
   this.balanceView = S.balanceBubbleView(state);
   this.renderBubble();
   if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
@@ -233,7 +235,9 @@ PetSprite.prototype.showBalanceNow = function showBalanceNow(state) {
   const name = S.pickSlot(slot, this.anim); // 数组槽位档内随机抽 1，且避开当前正播动画（避免连续重复，与浏览器一致）
   this.stopMove();
   this.bubbleOn = true;
-  this.balanceWrap = false; // 正常余额气泡是单行（nowrap），别继承上一次文字说明的换行变体
+  // 成功路径也走同一份判定：金额气泡带「今日用量」副行时是两行，需要换行变体
+  // （opencode 的两行档位/重置本来就窄，判定返回 false，保持 nowrap 观感不变）。
+  this.balanceWrap = S.balanceBubbleNeedsWrap(state);
   this.balanceView = S.balanceBubbleView(state);
   this.renderBubble();
   // 气泡 10s 定时消失（与动画解耦：即使动画被点击/拖拽打断，气泡也按时收起；重复触发先清旧定时器）

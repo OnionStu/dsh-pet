@@ -2,7 +2,7 @@
 // 自身不发起请求；工厂形态与 pet.ts 一致（react 由 DSH 运行时注入）。
 // 内容（文案/档位/数学）来自 src/shared/balance.ts 的 balanceBubbleView ——
 // 与桌面模式共用同一份行数据，本文件只负责把行数据映射成 React 节点。
-import { balanceBubbleView, type BalanceBubbleRow, type BalanceState } from '../shared/balance';
+import { balanceBubbleNeedsWrap, balanceBubbleView, type BalanceBubbleRow, type BalanceState } from '../shared/balance';
 import {
   MEME_BUBBLE_CLASS,
   MEME_IMG_CLASS,
@@ -106,9 +106,9 @@ export function makeBalanceBubble(rt: { h: typeof jsx }): (props: { state: Balan
 
   return function BalanceBubble({ state, on }: { state: BalanceState; on: boolean }) {
     const rows = balanceBubbleView(state);
-    // 不可用状态（不支持/缺凭证/抓取失败）是**多行文字说明**：套用碎碎念的换行变体
-    // （余额气泡默认 white-space:nowrap，长文案会直接顶出宠物宽度）
-    const wrap = state.ok ? '' : ' dsh-pet-whisper';
+    // 换行变体（碎碎念同款：字号 0.75、取消 nowrap、宽度自适应）——判定在 shared 里两端共用：
+    // 不可用状态是多行文字说明；金额气泡带「今日用量」副行时也是两行。两者都会顶出宠物宽度。
+    const wrap = balanceBubbleNeedsWrap(state) ? ' dsh-pet-whisper' : '';
     return h('div', {
       className: 'dsh-pet-bubble' + wrap + (on ? ' is-on' : ''),
       children: rowsToNodes(h, rows),
