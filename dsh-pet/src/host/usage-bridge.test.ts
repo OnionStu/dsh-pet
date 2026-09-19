@@ -13,17 +13,18 @@
  * 定位：**可选增强**。dsh-usage 是第三方插件，升级/被禁用都可能发生 → 任何失败都静默降级到
  * 本机折叠（usage-fold），绝不进关键路径。
  *
- * 夹具取自本机实测 overview（2026-09-18 13:34 快照；moark 与 modlens-moark 是两条独立记录，
- * 数字之和正好等于当日 totals，故夹具内部自洽）。
+ * 夹具是**合成数据**（结构与字段名照本机实测 overview 逐字复刻，数字全部换成合成值）：
+ * moark 与 modlens-moark 是两条独立记录，两者之和正好等于当日 totals，故夹具内部自洽。
+ * 断言只依赖这个自洽性，不依赖任何真实账户数字——测试在别人机器上同样可跑。
  */
 import { afterEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { fetchOverview, overviewBalance, overviewTodayUsage } from './usage-bridge.ts';
 
-/** 本机实测 overview 的精简版（结构与字段名逐字一致） */
+/** 合成的 overview 快照（结构与字段名照真实响应逐字复刻，数字为合成值） */
 const OVERVIEW = {
-  updatedAt: <timestamp>,
+  updatedAt: 1789718400000,
   providers: [
     {
       provider: 'deepseek',
@@ -31,7 +32,7 @@ const OVERVIEW = {
       credential: 'env',
       supported: true,
       balanceSupported: true,
-      balance: { currency: 'CNY', totalBalance: '36.04', updatedAt: <timestamp> },
+      balance: { currency: 'CNY', totalBalance: '30.00', updatedAt: 1789718400000 },
     },
     {
       provider: 'moark',
@@ -39,7 +40,7 @@ const OVERVIEW = {
       credential: 'env',
       supported: true,
       balanceSupported: true,
-      balance: { currency: 'CNY', totalBalance: '1255.20', updatedAt: <timestamp> },
+      balance: { currency: 'CNY', totalBalance: '1200.00', updatedAt: 1789718400000 },
     },
     { provider: 'modlens-moark', displayName: 'moark (modlens vision)', credential: 'none', supported: false },
   ],
@@ -48,24 +49,24 @@ const OVERVIEW = {
     today: {
       date: '2026-09-18',
       totals: {
-        inputTokens: 5675505,
-        outputTokens: 1136211,
-        cacheReadTokens: <cacheReadTokens>,
+        inputTokens: 5200000,
+        outputTokens: 1100000,
+        cacheReadTokens: 91000000,
         cacheWriteTokens: 0,
         reasoningTokens: 0,
-        calls: 804,
+        calls: 800,
         cost: 0,
       },
       providers: [
         {
           provider: 'moark',
           totals: {
-            inputTokens: <inputTokens>,
-            outputTokens: <outputTokens>,
-            cacheReadTokens: <cacheReadTokens>,
+            inputTokens: 5000000,
+            outputTokens: 1000000,
+            cacheReadTokens: 90000000,
             cacheWriteTokens: 0,
             reasoningTokens: 0,
-            calls: 744,
+            calls: 700,
             cost: 0,
           },
           models: [],
@@ -73,12 +74,12 @@ const OVERVIEW = {
         {
           provider: 'modlens-moark',
           totals: {
-            inputTokens: <inputTokens>,
-            outputTokens: <outputTokens>,
-            cacheReadTokens: <cacheReadTokens>,
+            inputTokens: 200000,
+            outputTokens: 100000,
+            cacheReadTokens: 1000000,
             cacheWriteTokens: 0,
             reasoningTokens: 0,
-            calls: 60,
+            calls: 100,
             cost: 0,
           },
           models: [],
@@ -106,8 +107,8 @@ function stubFetch(impl: (url: string) => Promise<Response> | Response): { urls:
 describe('overviewTodayUsage —— 抽某 family 的今日用量（含包装路由合并）', () => {
   test('moark + modlens-moark 两条记录相加（同一账号，切路由不跳变）', () => {
     assert.deepEqual(overviewTodayUsage(OVERVIEW, 'moark', '2026-09-18'), {
-      tokens: <inputTokens> + <outputTokens> + <cacheReadTokens> + (<inputTokens> + <outputTokens> + <cacheReadTokens>),
-      calls: 804,
+      tokens: 5000000 + 1000000 + 90000000 + (200000 + 100000 + 1000000),
+      calls: 800,
     });
   });
 
@@ -133,11 +134,11 @@ describe('overviewTodayUsage —— 抽某 family 的今日用量（含包装路
 
 describe('overviewBalance —— 自探测不支持时的余额兜底', () => {
   test('moark 快照 → 金额（CNY）', () => {
-    assert.deepEqual(overviewBalance(OVERVIEW, 'moark'), { currency: 'CNY', total: '1255.20' });
+    assert.deepEqual(overviewBalance(OVERVIEW, 'moark'), { currency: 'CNY', total: '1200.00' });
   });
 
   test('包装路由取上游账号的快照（modlens-moark → moark）——dsh-usage 自己做不到的一步', () => {
-    assert.deepEqual(overviewBalance(OVERVIEW, 'modlens-moark'), { currency: 'CNY', total: '1255.20' });
+    assert.deepEqual(overviewBalance(OVERVIEW, 'modlens-moark'), { currency: 'CNY', total: '1200.00' });
   });
 
   test('没有该 family → undefined', () => {

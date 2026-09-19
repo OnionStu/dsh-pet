@@ -5,11 +5,12 @@
  *   ① **包装路由**：当前默认 provider 是 `modlens-moark`（@liustack/modlens 自动铸造的
  *      `modlens-<upstream>` 包装路由），而余额表按 id 精确匹配 → 直接落 `unsupported`，
  *      连"有余额接口的服务商"都查不到。归一化必须在这里做一次。
- *   ② **假 0**：moark 的资源包公开接口对本机账号返回 `{balance:0, details:[]}`——那不是
+ *   ② **假 0**：moark 的资源包公开接口在未购资源包时返回 `{balance:0, details:[]}`——那不是
  *      "余额为零"，是"没有资源包"。把它当余额展示就是伪造 0，违反 balance.ts 的既有契约
  *      （未登记/取不到一律显式报错，绝不静默伪造数字）。
  *
- * 真值夹具取自本机实测响应（见文件内注释），不依赖网络。
+ * 夹具是**合成数据**：字段名与形状照真实响应复刻，数字全部换成合成值——断言只依赖
+ * 解析规则本身，不依赖任何真实账户数字，也不依赖网络。
  */
 import { afterEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,18 +23,18 @@ import {
   type BalanceAdapter,
 } from './balance.ts';
 
-/** 本机实测：moark 控制台会员额度（MOARK_CONSOLE_COOKIE） */
+/** 合成：moark 控制台会员额度响应体（MOARK_CONSOLE_COOKIE 端点；字段名照真实响应复刻） */
 const MOARK_CONSOLE_BODY = {
   limited: true,
   total_quota: 4000.0,
-  remaining_quota: 1255.200392,
+  remaining_quota: 1200.0,
   period_month: '2026-09',
   base_quota: 2000.0,
   temporary_quota: 2000.0,
-  used_quota: 2744.799608,
+  used_quota: 2800.0,
 };
 
-/** 本机实测：moark 资源包公开接口（MOARK_API_KEY）——该账号没有资源包，全是 0 */
+/** 合成：moark 资源包公开接口（MOARK_API_KEY）——未购资源包时全 0，不是余额 */
 const MOARK_PACKAGE_EMPTY_BODY = { total_amount: 0, used_amount: 0, balance: 0, details: [] };
 
 /** 按 family 取适配器（表里没有就是测试自己写错了，直接炸） */
@@ -100,11 +101,11 @@ describe('matchBalanceProvider —— 按 family 命中适配器', () => {
   });
 });
 
-describe('moark 适配器 —— 解析（真值来自本机实测响应）', () => {
+describe('moark 适配器 —— 解析（合成响应体，形状照真实响应）', () => {
   test('控制台额度：remaining_quota 是余额、total_quota 是基准（基准供档位折算用）', () => {
     assert.deepEqual(adapter('moark').parse(200, MOARK_CONSOLE_BODY), {
       currency: 'CNY',
-      total: '1255.20',
+      total: '1200.00',
       baseline: '4000.00',
     });
   });
@@ -166,7 +167,7 @@ describe('queryBalance —— 凭证解析与显式失败', () => {
       family: 'moark',
       kind: 'balance',
       source: 'probe',
-      data: { currency: 'CNY', total: '1255.20', baseline: '4000.00' },
+      data: { currency: 'CNY', total: '1200.00', baseline: '4000.00' },
     });
   });
 

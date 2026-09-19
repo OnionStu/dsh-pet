@@ -5,7 +5,8 @@
  * 以及自探测不支持时的快照兜底。合并规则错一条就会出现「伪造 0」「双倍计数」「拿旧快照顶替报错」
  * 这类只有用户肉眼才能发现的错，所以规则必须在装配层被钉住（而不是散在路由 handler 里）。
  *
- * 真值夹具：moark 控制台额度与 dsh-usage overview 都取自本机实测响应。
+ * 夹具是**合成数据**：字段名与形状照真实响应复刻，数字全部换成合成值——断言只依赖
+ * 形状与自洽性，不依赖任何真实账户数字。
  */
 import { afterEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,15 +18,15 @@ import { buildBalancePayload, type BalanceRouteInput } from './balance-route.ts'
 /** 包内文件源码（守卫用；相对 src/host/ 解析） */
 const readSource = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
-/** 本机实测：moark 控制台会员额度（MOARK_CONSOLE_COOKIE） */
-const MOARK_CONSOLE_BODY = { total_quota: 4000.0, remaining_quota: 1255.200392, used_quota: 2744.799608 };
-/** 本机实测：moark 资源包公开接口——该账号没有资源包，全是 0（不是余额） */
+/** 合成：moark 控制台会员额度响应体（字段名照真实响应的 MOARK_CONSOLE_COOKIE 端点复刻） */
+const MOARK_CONSOLE_BODY = { total_quota: 4000.0, remaining_quota: 1200.0, used_quota: 2800.0 };
+/** 合成：moark 资源包公开接口——未购资源包时全 0（这不是余额，须被假 0 防线拦下） */
 const MOARK_PACKAGE_EMPTY_BODY = { total_amount: 0, used_amount: 0, balance: 0, details: [] };
 
 /** dsh-usage overview 精简夹具（moark 快照 + 今日用量） */
 const OVERVIEW = {
   providers: [
-    { provider: 'moark', displayName: 'moark', balance: { currency: 'CNY', totalBalance: '1255.20' } },
+    { provider: 'moark', displayName: 'moark', balance: { currency: 'CNY', totalBalance: '1200.00' } },
     { provider: 'openrouter', displayName: 'openrouter', balance: { currency: 'USD', totalBalance: '7.50' } },
   ],
   usage: {
@@ -87,7 +88,7 @@ describe('buildBalancePayload —— 自探测成功（当前默认路由 modlen
       family: 'moark',
       kind: 'balance',
       source: 'probe',
-      data: { currency: 'CNY', total: '1255.20', baseline: '4000.00' },
+      data: { currency: 'CNY', total: '1200.00', baseline: '4000.00' },
       usage: { tokens: 5120, calls: 7, source: 'dsh-usage' },
     });
   });

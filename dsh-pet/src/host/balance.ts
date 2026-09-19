@@ -177,9 +177,9 @@ const OPENCODE_GO: WindowsAdapter = {
 /**
  * Moark（模力方舟 / Gitee AI）余额：
  * - **控制台会员额度**（需要 `MOARK_CONSOLE_COOKIE`）：`remaining_quota` 是当月剩余额度（CNY），
- *   `total_quota` 是当月总额度（作档位基准）；本机实测真数字只在这里（¥<金额>）。
+ *   `total_quota` 是当月总额度（作档位基准）；只有这个端点给的是**账户真实余额**。
  * - 资源包公开接口（`MOARK_API_KEY`，Bearer）作兜底：它返回的是**资源包**余额，
- *   本机账号没有资源包 → `{balance:0, details:[]}`。这不是"余额为零"，
+ *   未购买资源包的账号会返回全 0 → `{balance:0, details:[]}`。这不是"余额为零"，
  *   解析层显式返回 undefined（上层落 fetch-error），绝不展示 ¥0.00。
  */
 const MOARK: MoneyAdapter = {

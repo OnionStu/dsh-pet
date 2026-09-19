@@ -179,8 +179,8 @@ describe('balanceBubbleNeedsWrap —— 换行变体判定', () => {
         family: 'moark',
         ok: true,
         kind: 'balance',
-        total: '1255.20',
-        usage: { tokens: <tokens>, calls: 804 },
+        total: '1200.00',
+        usage: { tokens: 120000000, calls: 800 },
       }),
       true,
     );
@@ -193,7 +193,7 @@ describe('balanceBubbleNeedsWrap —— 换行变体判定', () => {
         family: 'moark',
         ok: true,
         kind: 'balance',
-        total: '1255.20',
+        total: '1200.00',
       }),
       false,
     );
@@ -231,7 +231,7 @@ describe('源码守卫 —— 换行变体判定不得两端各写一份', () =>
 });
 // 背景（2026-09-18）：余额数据源新增 moark family（当前默认 provider 是 modlens-moark 包装路由）。
 // 金额型视图因此要能表达两件新事实：
-//   ① 基准（baseline）——档位折算的满额值随探测结果下发，写死 ¥20 会让 ¥1255 的 moark 永远显示「已用 0%」；
+//   ① 基准（baseline）——档位折算的满额值随探测结果下发，写死 ¥20 会让 ¥1200 的 moark 永远显示「已用 0%」；
 //   ② 今日用量（usage）——气泡在金额下补一行「今日 N tokens · M 次调用」（与另一只宠物同口径）。
 
 /** 临时替换全局 fetch；用完整 Response（shared 侧走真实 fetch 语义） */
@@ -245,14 +245,14 @@ function stubFetchOnce(body: unknown, status = 200): () => void {
 
 describe('formatTokens —— zh 紧凑计数（与 dsh-usage 的 note 同口径）', () => {
   test('万以下原样', () => {
-    assert.equal(formatTokens(9805), '9805');
+    assert.equal(formatTokens(9000), '9000');
     assert.equal(formatTokens(0), '0');
   });
 
   test('万位/亿位紧凑成一位小数，整数不带 .0', () => {
     assert.equal(formatTokens(45123), '4.5万');
     assert.equal(formatTokens(20000), '2万');
-    assert.equal(formatTokens(<tokens>), '1.1亿');
+    assert.equal(formatTokens(120000000), '1.2亿');
   });
 });
 
@@ -264,13 +264,13 @@ describe('余额气泡 —— 金额形态带今日用量行', () => {
         family: 'moark',
         ok: true,
         kind: 'balance',
-        total: '1255.20',
+        total: '1200.00',
         baseline: '4000.00',
-        usage: { tokens: <tokens>, calls: 804 },
+        usage: { tokens: 120000000, calls: 800 },
       }),
       [
-        { role: 'label', text: '余额 ¥<金额>' },
-        { role: 'sub', text: '今日 1.1亿 tokens · 804 次调用' },
+        { role: 'label', text: '余额 ¥1200.00' },
+        { role: 'sub', text: '今日 1.2亿 tokens · 800 次调用' },
       ],
     );
   });
@@ -281,35 +281,35 @@ describe('余额气泡 —— 金额形态带今日用量行', () => {
       family: 'deepseek-official',
       ok: true,
       kind: 'balance',
-      total: '36.04',
+      total: '30.00',
       baseline: '20.00',
-      usage: { tokens: 9805, calls: 12 },
+      usage: { tokens: 9000, calls: 10 },
     });
     assert.equal(rows[0]?.text, '余额（');
     assert.equal(rows[1]?.role, 'tier');
-    assert.equal(rows[2]?.text, '）¥<金额>');
-    assert.deepEqual(rows[3], { role: 'sub', text: '今日 9805 tokens · 12 次调用' });
+    assert.equal(rows[2]?.text, '）¥30.00');
+    assert.deepEqual(rows[3], { role: 'sub', text: '今日 9000 tokens · 10 次调用' });
   });
 
   test('无用量 → 不出现空行（金额单行）', () => {
     assert.deepEqual(
-      balanceBubbleView({ provider: 'modlens-moark', family: 'moark', ok: true, kind: 'balance', total: '1255.20' }),
-      [{ role: 'label', text: '余额 ¥<金额>' }],
+      balanceBubbleView({ provider: 'modlens-moark', family: 'moark', ok: true, kind: 'balance', total: '1200.00' }),
+      [{ role: 'label', text: '余额 ¥1200.00' }],
     );
   });
 });
 
 describe('balancePercent —— 基准随探测结果下发', () => {
-  test('moark： ¥<金额>/ 基准 ¥4000 → 已用 68.6%（用写死的 ¥20 会算成 0%）', () => {
+  test('moark：¥1200.00 / 基准 ¥4000 → 已用 70%（用写死的 ¥20 会算成 0%）', () => {
     const p = balancePercent({
       provider: 'modlens-moark',
       family: 'moark',
       ok: true,
       kind: 'balance',
-      total: '1255.20',
+      total: '1200.00',
       baseline: '4000.00',
     });
-    assert.ok(p !== undefined && Math.abs(p - 68.62) < 0.01, 'p=' + String(p));
+    assert.ok(p !== undefined && Math.abs(p - 70) < 0.01, 'p=' + String(p));
   });
 
   test('缺基准（老响应）→ 回落 DeepSeek 的 ¥20 基准', () => {
@@ -340,8 +340,8 @@ describe('fetchBalanceState —— 解析 host 扩展字段', () => {
       family: 'moark',
       kind: 'balance',
       source: 'probe',
-      data: { currency: 'CNY', total: '1255.20', baseline: '4000.00' },
-      usage: { tokens: <tokens>, calls: 804, source: 'dsh-usage' },
+      data: { currency: 'CNY', total: '1200.00', baseline: '4000.00' },
+      usage: { tokens: 120000000, calls: 800, source: 'dsh-usage' },
     });
     try {
       assert.deepEqual(await fetchBalanceState(), {
@@ -350,9 +350,9 @@ describe('fetchBalanceState —— 解析 host 扩展字段', () => {
         ok: true,
         kind: 'balance',
         currency: 'CNY',
-        total: '1255.20',
+        total: '1200.00',
         baseline: '4000.00',
-        usage: { tokens: <tokens>, calls: 804 },
+        usage: { tokens: 120000000, calls: 800 },
       });
     } finally {
       restore();
@@ -364,7 +364,7 @@ describe('fetchBalanceState —— 解析 host 扩展字段', () => {
       ok: true,
       provider: 'deepseek-official',
       kind: 'deepseek',
-      data: { currency: 'CNY', total: '36.04' },
+      data: { currency: 'CNY', total: '30.00' },
     });
     try {
       const state = await fetchBalanceState();
@@ -383,7 +383,7 @@ describe('fetchBalanceState —— 解析 host 扩展字段', () => {
       provider: 'modlens-moark',
       family: 'moark',
       kind: 'balance',
-      data: { total: '1255.20' },
+      data: { total: '1200.00' },
       usage: { tokens: 'abc', calls: 0 },
     });
     try {
