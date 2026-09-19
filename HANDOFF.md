@@ -78,8 +78,8 @@ DSH 的「等待审批」卡片只在发起会话内显示（core 把 ApprovalPa
 | 资源包余额（公开 API） | `https://api.moark.com/v1/tokens/packages/balance` | `MOARK_API_KEY`（Bearer）               | `balance` / `remaining_quota`，CNY                |
 | 控制台会员额度         | `https://moark.com/api/base/oschina/member/quota`  | `MOARK_CONSOLE_COOKIE`（浏览器 Cookie） | `remaining_quota` / `member_remaining_quota`，CNY |
 
-- 两个 ref **都已在** `$DSH_HOME 下的 credentials 文件`；当前快照 `~/.dsh/dsh-usage/provider-snapshots.json` → `moark.balance = ¥<金额>`（2026-09-18 13:34 仍在刷新，同时 `deepseek-official` 是 ¥<金额>）。
-- **用量**：moark 没有（我们已接的）程序化用量端点，全库只接了上面两条。用量来自 dsh-usage 的本地台账 `~/.dsh/dsh-usage/usage-ledger.json`（按本地日 × provider × model 折叠 `inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens/reasoningTokens/calls/cost`）——2026-09-18 moark 记着 `qwen3.8-max` 368 次调用、`qwen3.8-flash` 133 次。
+- 两个 ref **都已在**本机 DSH 凭据库（`$DSH_HOME` 下的 credentials 文件，路径不入库）；当前快照 `~/.dsh/dsh-usage/provider-snapshots.json` → `moark.balance = ¥<余额>`（2026-09-18 13:34 仍在刷新，同时 `deepseek-official` 是 ¥<余额>）。
+- **用量**：moark 没有（我们已接的）程序化用量端点，全库只接了上面两条。用量来自 dsh-usage 的本地台账 `~/.dsh/dsh-usage/usage-ledger.json`（按本地日 × provider × model 折叠 `inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens/reasoningTokens/calls/cost`）——2026-09-18 moark 记着 `qwen3.8-max` <N> 次调用、`qwen3.8-flash` <M> 次。
 - ⚠️ **补丁脆弱**：moark 支持是打在 `node_modules` 里的本地补丁，不是上游能力（上游 `@linxin666/dsh-usage@0.3.22` README 的支持清单没有 moark）。每次 `pnpm install` / `dsh-web-all` 升级都会冲掉，靠 profile 的 `postinstall` 重跑 `reapply-moark-usage-patch.mjs` 续命；`postinstall` 被跳过时须手动补跑。
 
 ### 为什么「另外一只宠物」能看到
@@ -136,7 +136,7 @@ service(this.ctx, "pet")?.announce({
 ### 风险与验收
 
 - 风险：① 猴子补丁依赖上游 `announce()` 方法签名，上游改动即失效（(b2)/(b3) 可规避）；② 与审批浮层的 `data-dsh-pet-alerts` 让位规则打架 → 公告气泡也要参与让位；③ 公告 TTL 骑 dsh-usage 的轮询周期（默认 60s → TTL 150s），`bubbleMode: off/change` 时可能长时间无公告，属设计内。
-- 验收：`GET /dsh-pet-7340/announce` 返回最新公告；气泡显示 `moark ¥<金额>` + 「今日 N tokens · M 次调用」，与 `provider-snapshots.json` / `usage-ledger.json` 数值一致；质量门 `npm run typecheck && npm run lint && npx prettier --check && npm test（178/179 基线）&& npm run bundle`。
+- 验收：`GET /dsh-pet-7340/announce` 返回最新公告；气泡显示 `moark ¥<余额>` + 「今日 N tokens · M 次调用」，与 `provider-snapshots.json` / `usage-ledger.json` 数值一致；质量门 `npm run typecheck && npm run lint && npx prettier --check && npm test（178/179 基线）&& npm run bundle`。
 - 前置：**动宿主半 → 必须用户自己重启 `dsh web`**（AGENTS.md 硬规矩，agent 不代跑）；`git push` 亦由用户执行。
 
 ## 交付记录 (b′)：Moark 余额 + 今日用量（**已交付，2026-09-18**）
@@ -148,7 +148,7 @@ service(this.ctx, "pet")?.announce({
 1. **dsh-usage 的 `adapterFor` 是精确 id 匹配**（`PROVIDER_ADAPTERS.find(a => a.ids.includes(id))`，`@linxin666/dsh-usage/lib/index.js:592`），moark 适配器只登记了 `moark`；而当前默认 provider 是 **`modlens-moark`**（modlens 自动铸造的包装路由，`@liustack/modlens/dsh/index.js:620`）→ **包装路由拿不到 snapshot**，`announceCurrent()` 落到 ledger 兜底：只发 `kind:'cost'`（今日用量），**没有余额**。所以 b1（补丁 `pet.announce`）/ b3（镜像上游 `/api/pet/state`）镜像到的是「今日 N tokens」，不含 ¥金额——与「像另一只宠物一样看到余额」的需求不符。
    - 实测：`GET /dsh-pet-7340/balance` 当时返回 `{"ok":false,"provider":"modlens-moark","reason":"unsupported"}`（本文件旧文写的当前 provider = `moark` 已过时）。
 2. **moark 资源包接口是「假 0」**：`GET https://api.moark.com/v1/tokens/packages/balance`（Bearer `MOARK_API_KEY`）→ `{"total_amount":0,"used_amount":0,"balance":0,"details":[]}`——本机账号没有资源包，**这不是「余额为零」**。真数字只在控制台接口：`https://moark.com/api/base/oschina/member/quota`（`MOARK_CONSOLE_COOKIE`）→ `remaining_quota <剩余额度> / total_quota <总额度>`。
-3. **基准必须随探测结果下发**：客户端 `balancePercent` 原来写死 ¥20（DeepSeek 语义），¥1255 的 moark 会算成「已用 0%」，档位动画永不降级。现在 `baseline` 由 host 下发（moark = 当月总额度 4000）。
+3. **基准必须随探测结果下发**：客户端 `balancePercent` 原来写死 ¥20（DeepSeek 语义），余额为 ¥<四位数> 的 moark 会算成「已用 0%」，档位动画永不降级。现在 `baseline` 由 host 下发（moark = 当月总额度 4000）。
 
 ### 最终形态（四条数据流各管一段）
 
@@ -173,12 +173,12 @@ service(this.ctx, "pet")?.announce({
   "family": "moark",
   "kind": "balance",
   "source": "probe",
-  "data": { "currency": "CNY", "total": "1089.18", "baseline": "4000.00" },
-  "usage": { "tokens": <tokens>, "calls": 321, "source": "dsh-usage" }
+  "data": { "currency": "CNY", "total": "<余额>", "baseline": "4000.00" },
+  "usage": { "tokens": <tokens>, "calls": <calls>, "source": "dsh-usage" }
 }
 ```
 
-过客户端解析链后的气泡：`余额 ¥<金额>` + `今日  <N>万 tokens· 321 次调用`（换行变体 true，档位百分比 72.77 → 档位 3）。
+过客户端解析链后的气泡：`余额 ¥<余额>` + `今日 <N>万 tokens · <M> 次调用`（换行变体 true，档位百分比 <p> → 档位 3）。
 
 ### 质量门与提交
 
@@ -188,7 +188,7 @@ service(this.ctx, "pet")?.announce({
 
 ## 已验证的关键契约（维护时照抄，别再全局 grep）
 
-DSH dist 根：`<全局 node_modules>/@deepseek-ai/dsh/node_modules/@deepseek-ai/`（下称 `$D`）。
+DSH dist 根：`<全局 node_modules>/@deepseek-ai/dsh/node_modules/@deepseek-ai/`（下称 `$D`；本机为 Homebrew 前缀下的 node_modules，具体前缀随机器而异）。
 
 | 事项               | 结论                                                                                                                                                                                                            | 出处                                                                |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
@@ -211,7 +211,7 @@ DSH dist 根：`<全局 node_modules>/@deepseek-ai/dsh/node_modules/@deepseek-ai
 
 ## 后续维护启动清单
 
-1. `cd  <仓库根>&& git log --oneline 8f0535b~1..HEAD`（交付链完整、工作区干净）。
+1. `cd <仓库根> && git log --oneline 8f0535b~1..HEAD`（交付链完整、工作区干净）。
 2. `npm test` 预期 178/179（helper-process electron 已知失败）。
 3. 视觉问题：让用户贴截图 + 说方向；对齐类改动一律用「测原生气泡 rect」策略，系数改动见 approvals.ts `placeAlerts`。
 4. 需要用户配合的节点：批准沙箱外写、跑 `~/.dsh/profiles/web/restart-dsh-web.sh`（仅动 host 半时）、`git push`。
