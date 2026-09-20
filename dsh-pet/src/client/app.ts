@@ -45,14 +45,15 @@ export function makeFactory(): (require: (mod: string) => any) => any {
         return () => ac.abort();
       }, 'dsh-pet: notifications');
 
-      // 跨会话审批提醒：订阅 uiSession.pendingInteractions + sessions.list，把「别的会话挂着
-      // 待审批/待选择」渲染成宠物角落的浮层气泡卡（点击切会话）+ 标签页 [N 待审批] 角标。
-      // 纯 client 数据源（零 host 改动、零新事件源）；uiSession/sessions 已声明为服务依赖。
+      // 跨会话提醒浮层（宠物头顶卡片 + 标签页 [N 待处理] 角标），两路数据源：
+      //   ① 审批/选择题：订阅 uiSession.pendingInteractions + sessions.list（纯 client 数据源）；
+      //   ② 重启提醒：轮询 host /restart-notice（agent 调 notify_restart_required 工具写入）。
+      // uiSession/sessions 已声明为服务依赖；两路各自降级，缺一路不影响另一路。
       ctx.effect(() => {
         const ac = new AbortController();
         startApprovalAlerts(ctx, ac.signal);
         return () => ac.abort();
-      }, 'dsh-pet: approval alerts');
+      }, 'dsh-pet: cross-session alerts');
 
       // /pet 选择框：裸输 /pet 回车或菜单点选时弹出桌宠列表，选中后提交 /pet <id> 由 host 命令落地。
       // commandUi 已声明为服务依赖（上方 inject）：插件只在「/」命令服务就绪后 apply，

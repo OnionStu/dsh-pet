@@ -186,6 +186,52 @@ service(this.ctx, "pet")?.announce({
 - 新增 4 个测试文件：`src/host/{balance,balance-route,usage-fold,usage-bridge}.test.ts`（含 `index.ts` 接线守卫，防止合并规则被绕开重写）。
 - ⚠️ **宿主半改动（`src/host/*`、`runtime/electron-helper/events.js`、重建的 `shared-core.js`）需用户重启 `dsh web` 才生效**；client 半（`bubble.ts`/`shared`）硬刷新即可。
 
+## 交付记录 (c)：「需要重启宿主」提醒（**已交付，2026-09-20**）
+
+> 需求原话：「插件开发阶段经常有会话让我重启 DSH，能加个需求说，如果有会话要求重启时，也跟审批一样，宠物有个弹窗提醒我」。用户拍板走**方案 B：显式标记工具**（否决了文本关键词匹配）。
+
+### 决定方案的那条事实：DSH 没有「需要重启」这种信号
+
+1. **宿主事件表里查不到**：`dsh-session` 的已知事件全表（`turn/start|end`、`approval/asked|decided|request|policy`、`tool/call|result|code-dispatch*`、`assistant/message|chunk`、`session/*`…）**没有任何 restart 相关项**；DSH 全包 grep `restart` 只命中 Electron 子进程守护与设置页的连接重连，与本语义无关。
+2. 所以「会话在要求重启」只存在于**助手输出的自然语言**里。文本匹配必然误报——本机全局 `AGENTS.md` 的「宿主重启规则」一节里「重启」出现十余次，**任何读 AGENTS.md 的会话都会命中**（讨论重启规则、甚至写这个功能本身的会话）。
+3. → 改为 agent 主动调用的**工具**：零误报、零歧义，代价是需要往 `AGENTS.md` 加一条纪律（见下方「前置条件」）。
+
+### 最终形态（四条数据流各管一段）
+
+| 环节     | 做法                                                                                                                                                       | 文件                                                       |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 写入     | agent 调 `notify_restart_required`（参数 `reason`）→ host 内存表 `Map<sessionId, {reason, ts}>`；同会话重复调用 = 覆盖，不堆叠                                | `src/host/restart-notice.ts`                               |
+| 读取     | `GET /dsh-pet-7340/restart-notice`（no-cache）→ 浏览器 1s 轮询、签名（`sessionId@ts` 排序后 join）变化才回调重渲染                                          | `src/host/index.ts`、`src/client/restart-notice.ts`        |
+| 消除     | ① **用户真的重启宿主** → 内存清空、卡片自动消失（天然消除事件，故**不设过期**）；② 卡片 × → `POST /restart-notice/dismiss`（乐观移除 + 下一拍纠回）           | 同上                                                       |
+| 渲染     | 复用审批浮层：白泡卡「「会话名」● 需要重启 DSH · 理由」，蓝点区分审批红点；标题角标 `[N 待处理]`（N = 全部提醒行）                                          | `src/client/approvals.ts`                                  |
+
+- **行序是硬约束**：重启行在前、审批行在后。浮层是「底边锚在宠物头顶」的弹性列（`placeAlerts` 取原生气泡 `rect.bottom`），**只有最后一行贴着宠物**——审批卡必须留在最底，否则会破坏已 8 次调校的贴位。
+- **重启提醒不过滤当前会话**（审批提醒过滤）：审批面板本来就显示在发起会话里、点一下就处理完；重启提醒的价值恰恰是「别忘」，切走再切回来它必须还在。
+- 开关 `restartNoticeEnabled`（默认开）：关闭时工具**仍被调用**，但只回「已关闭、没弹卡」（`ok:false`）——**绝不伪报「已提醒」**，agent 仍会在回复里告诉你要重启。
+
+### ⚠️ 前置条件：`AGENTS.md` 必须加一条纪律（否则功能永不触发）
+
+工具描述会进模型视野，但「什么时候该调」这条纪律要写进全局 `~/.dsh/AGENTS.md`（与既有「宿主重启规则」并排）：
+
+> 宿主半/插件代码改动需重启才生效时：**调用 `notify_restart_required` 工具**（桌宠会弹提醒卡），再向用户说明改动已提交、提示用户自行重启。
+
+### 坑：`@deepseek-ai/dsh-tools` 不在本包 node_modules
+
+`defineTool` 用不了（该包不在 `dsh-pet/node_modules`，引它要新增 peer 依赖 + 用户侧 `pnpm install`）。改为**手写 tool definition 对象**，形状用真实 `defineTool` 反推逐字对齐，并**实测**过 DSH 的校验链：
+
+- `assertSupportedJsonSchema(output.schema)` 通过；
+- `parameters` 能真正校验入参（缺 reason → `missing required property "reason"`、类型错 → `must be a string`）——注意手写定义**绕过了 `defineTool` 的内建入参校验**，所以 `execute` 里自己兜（空理由显式抛错）；
+- `output.schema` 与官方编译产物逐字相同，两种规范值都过 `validateJsonSchemaValue`。
+
+**output schema 的写法有坑**：`output.schema` 是**单个值 schema 节点**（不是属性表），对象根必须显式写 `additionalProperties: true|false`，且根上**不允许** `required`（逐属性的 `required:true` 会被提升成根的 required 数组）。写错在 `register()` 里抛错——所以注册整段套 `try/catch` 只降级本能力，**绝不让宠物插件整体挂掉**。
+
+### 质量门与提交
+
+- `tsc --noEmit`（含 `tsconfig.test.json`）、`eslint .`、`prettier --check .`、`tsdown` 构建：全绿。
+- `npm test` **284/285**（唯一失败仍是 `helper-process.test.ts` 的 Electron 路径解析 ENOENT，**已在干净树上复现证明为既有失败**、与本特性无关）。
+- 新增 2 个测试文件共 29 个用例：`src/host/restart-notice.test.ts`（内存表语义 / 定义形状对齐 / execute 三分支）、`src/client/restart-notice.test.ts`（**不过滤当前会话** / 理由截断 / 轮询签名）。
+- ⚠️ **host 半改动需用户重启 `dsh web`**；client 半（`lib/client.js`）需**重启 + 硬刷新**两步。agent 不代跑。
+
 ## 已验证的关键契约（维护时照抄，别再全局 grep）
 
 DSH dist 根：`<全局 node_modules>/@deepseek-ai/dsh/node_modules/@deepseek-ai/`（下称 `$D`；本机为 Homebrew 前缀下的 node_modules，具体前缀随机器而异）。

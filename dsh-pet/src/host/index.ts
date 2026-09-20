@@ -31,6 +31,8 @@
  *   /dsh-pet-7340/broadcast            → /chat 命令触发的气泡广播（两端 1s 轻轮询）
  *   /dsh-pet-7340/balance|balance/trigger → 余额查询 / 手动触发计数（/balance 命令 +1）
  *   /dsh-pet-7340/notify              → 系统通知帧（host 监听 DSH 宿主事件生成，浏览器增量轮询）
+ *   /dsh-pet-7340/restart-notice       → 「需要重启宿主」提醒（agent 调 notify_restart_required 工具写入，
+ *                                       浏览器 1s 轮询渲染成宠物头顶提醒卡；dismiss 子路径 = 手动消除）
  *   /dsh-pet-7340/font|pic             → 字体 / 通知图标素材
  *
  * 系统通知不属于宠物行为、不在这里的旧实现是：浏览器半侧 notify.ts 经 connection 事件流
@@ -78,6 +80,7 @@ import {
   type WorkStatusTurnContext,
 } from './work-status';
 import { agentErrorFrame, reduceNotifyFrame, type HostNotifyFrame } from './notify-events';
+import { createRestartNoticeStore, restartNoticeToolDefinition } from './restart-notice';
 import { profileNameFrom, storageEntries } from './storage-paths';
 import {
   HelperProcess,
@@ -90,8 +93,8 @@ import {
 
 /** 插件行 id（与 cordis.patch.yml 一致） */
 export const name = 'pet';
-/** 需要注入的服务：webServer（路由）+ agentDefaultModel（当前服务商）+ credentials（凭证）+ llm（对话模型调用）+ commands（/balance 斜杠命令） */
-export const inject = ['webServer', 'agentDefaultModel', 'credentials', 'llm', 'commands'];
+/** 需要注入的服务：webServer（路由）+ agentDefaultModel（当前服务商）+ credentials（凭证）+ llm（对话模型调用）+ commands（/balance 斜杠命令）+ tools（重启提醒工具注册） */
+export const inject = ['webServer', 'agentDefaultModel', 'credentials', 'llm', 'commands', 'tools'];
 
 /** 本包目录：宿主构建产物位于 lib/，其上一级即包根。 */
 const PACKAGE_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -232,6 +235,21 @@ export function apply(ctx: any): void {
     notifySeq += 1;
     notifyFrames.push({ seq: notifySeq, frame });
     if (notifyFrames.length > NOTIFY_QUEUE_MAX) notifyFrames.shift();
+  };
+  // 「需要重启宿主」提醒内存表（/restart-notice 端点读取）：agent 调 notify_restart_required 工具
+  // 写入，浏览器 1s 轮询渲染成宠物头顶的提醒卡。**进程内内存态**——用户真的重启宿主后
+  // 内存随之清空，卡片自己消失：这就是它天然的消除事件，所以不设过期时间。
+  // 见 ./restart-notice（自包含：DSH 事件表里没有「需要重启」这种结构化信号，只能靠显式标记）。
+  const restartNotices = createRestartNoticeStore();
+  /** 重启提醒开关（成品配置 main 条目的 restartNoticeEnabled；每次现读，改配置即时生效） */
+  const restartNoticeEnabled = (): boolean => {
+    try {
+      const main = readAllConfig(configPaths).main as Record<string, unknown> | undefined;
+      const v = main?.restartNoticeEnabled;
+      return typeof v === 'boolean' ? v : true; // 缺失即内置默认（true）——合并器已填，这里只兜异常
+    } catch {
+      return true; // 配置读取异常不该让工具变成"静默不弹卡"
+    }
   };
   /** 每会话最近状态（会话 id → 状态），多会话时取优先级最高的作展示（与 better-dsh-pet 同思路） */
   const workStatusBySession = new Map<string, { state: HostWorkStatusState; seq: number }>();
@@ -866,6 +884,34 @@ export function apply(ctx: any): void {
       };
     }
 
+    // 重启提醒：/dsh-pet-7340/restart-notice（GET，no-cache）
+    // agent 调 notify_restart_required 工具写入的内存表；浏览器 1s 轮询渲染成宠物头顶的提醒卡
+    //（与审批卡同一浮层）+ 标签页角标。宿主重启后内存清空 = 提醒自动消失（天然消除事件）。
+    if (rest === 'restart-notice') {
+      if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      return {
+        kind: 'json',
+        status: 200,
+        obj: { ok: true, items: restartNotices.snapshot() },
+        headers: { 'cache-control': 'no-cache, no-store' },
+      };
+    }
+
+    // 重启提醒手动消除：/dsh-pet-7340/restart-notice/dismiss（POST，body = { sessionId }）
+    // 卡片上的 × 按钮走这里；返回 removed 让客户端能如实反馈（点了但早已不存在 = removed:false，不伪报）
+    if (rest === 'restart-notice/dismiss') {
+      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      let sessionId = '';
+      try {
+        const parsed = JSON.parse(body ?? '') as { sessionId?: unknown } | null;
+        if (typeof parsed?.sessionId === 'string') sessionId = parsed.sessionId;
+      } catch {
+        /* 非法 JSON：按缺 sessionId 处理，下方 400 */
+      }
+      if (!sessionId) return { kind: 'json', status: 400, obj: { error: 'sessionId required' } };
+      return { kind: 'json', status: 200, obj: { ok: true, removed: restartNotices.dismiss(sessionId) } };
+    }
+
     // 动画文件：/dsh-pet-7340/thumb/<素材根>/<file>，扩展名 webm（默认）/ mov（macOS 定制）。
     // 素材归属按「是否存在该宠物的独立素材目录 `pet/<petId>-animation/`」判定：
     //   - 存在（pet pack 宠物）：只查自己的目录，查不到即 404 显式报错——绝不混用
@@ -1069,6 +1115,33 @@ export function apply(ctx: any): void {
       errorDispose();
     };
   }, 'dsh-pet: notify frames');
+
+  // 重启提醒工具：agent 在「改动已做完、必须由用户重启宿主才生效」时调用 notify_restart_required，
+  // 写入内存表 → 浏览器轮询 /restart-notice 渲染成宠物头顶的提醒卡（与审批卡同一浮层）。
+  // 为什么是工具而不是文本匹配：DSH 事件表里没有「需要重启」这种结构化信号，而助手文本里
+  // 「重启」这个词到处都是（讨论重启规则、读 AGENTS.md 都会命中）——文本匹配必然误报。
+  // 注册失败必须**只降级本能力**，绝不能让整个宠物插件挂掉：register 会校验定义形状，
+  // 不符即抛错，所以整段套 try/catch 并显式告警（与其它可选能力的降级风格一致）。
+  ctx.effect(() => {
+    const tools = (ctx as unknown as { tools?: { register?: (def: unknown) => () => void } }).tools;
+    if (typeof tools?.register !== 'function') {
+      console.warn('[dsh-pet] 重启提醒不可用：ctx.tools 服务缺失（宠物其余功能不受影响）');
+      return () => {};
+    }
+    let dispose: (() => void) | undefined;
+    try {
+      dispose = tools.register(restartNoticeToolDefinition({ store: restartNotices, enabled: restartNoticeEnabled }));
+    } catch (e) {
+      console.warn(
+        '[dsh-pet] 重启提醒工具注册失败（宠物其余功能不受影响）：' + (e instanceof Error ? e.message : String(e)),
+      );
+      return () => {};
+    }
+    return () => {
+      restartNotices.clear(); // 工具撤销即清表：不留无人消费的提醒
+      dispose?.();
+    };
+  }, 'dsh-pet: restart notice tool');
 
   // /balance 斜杠命令：递增触发计数 → 浏览器/桌面检测到变化后立即刷新余额
   // （成功播档位动画 + 余额气泡；服务商不支持/缺凭证/抓取失败则弹文字说明气泡，绝不静默）

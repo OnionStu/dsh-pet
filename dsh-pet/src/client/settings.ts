@@ -87,6 +87,9 @@ export const zh = {
     '另 {n} 只额外宠物由 pet/ 目录文件定义（<名>-config.json + <名>-animation/），它们不在此列表——改文件即生效，刷新可见。',
   notifyToggle: '系统通知',
   notifyToggleHint: '对话完成 / 生成失败 / 权限申请 / 用户选择，在窗口失焦时弹出系统级通知（桌面右下角）。',
+  restartNoticeToggle: '重启提醒',
+  restartNoticeToggleHint:
+    'agent 改完代码、需要你自己重启 DSH 才生效时，会调 notify_restart_required 工具——宠物头顶弹出「需要重启 DSH」提醒卡（与审批卡同一浮层 + 标签页 [N 待处理] 角标），点卡片跳回发起会话、点 × 消掉；你重启宿主后提醒自动消失。关闭后工具仍会被调用，但只回一句「已关闭、没弹卡」，agent 仍会在回复里告诉你要重启。与宠物一起保存后生效。',
   whisperImageToggle: '碎碎念配图',
   whisperImageToggleHint:
     '碎碎念时从表情包池随机抽一张，连同那句话一起显示（图片映射在配置文件顶层 memes）。token：碎碎念本来就每次生成都要调一次模型，配图只是把抽中那张的名称+描述（约 100 字符 / ≈60 token）加进同一次请求，增量可忽略。',
@@ -174,6 +177,9 @@ export const en = {
   notifyToggle: 'System notifications',
   notifyToggleHint:
     'OS-level toasts (bottom-right of the desktop) for conversation completion, failures, permission requests, and questions — only while this window is unfocused.',
+  restartNoticeToggle: 'Restart reminder',
+  restartNoticeToggleHint:
+    'When the agent finishes a code change that only takes effect after you restart DSH yourself, it calls the notify_restart_required tool — a "restart DSH" card pops above the pet (same overlay as the approval card, plus an [N pending] tab badge). Click the card to jump back to that session, click × to dismiss it; the reminder clears itself once you actually restart the host. When off, the tool still runs but only reports "off, nothing shown", and the agent still tells you to restart in its reply. Takes effect after saving.',
   whisperImageToggle: 'Whisper images',
   whisperImageToggleHint:
     'Attach one random meme from the pool to each whisper line (image mapping lives in the top-level `memes` config field). Tokens: a whisper already calls the model every cycle, so the image only appends the name + description of that one meme (~100 chars / ~60 tokens) to the same request — negligible.',
@@ -294,6 +300,9 @@ export function makePetConfigSection(rt: {
     // 表情包配图开关（全局：写用户级配置；与「保存」一起提交，不做即时写入）
     const [whisperImage, setWhisperImage] = useState(false);
     const [chatImage, setChatImage] = useState(false);
+    // 重启提醒开关（全局：写用户级配置；同配图开关——与「保存」一起提交。host 侧每次工具调用现读，
+    // 所以保存后立刻生效，不需要刷新页面）
+    const [restartNotice, setRestartNotice] = useState(true);
     // 权限申请按钮的反馈（就地显示在按钮旁，与全局保存反馈分离）
     const [permMsg, setPermMsg] = useState<{ kind: 'ok' | 'err' | ''; text: string }>({ kind: '', text: '' });
     useEffect(() => {
@@ -307,9 +316,10 @@ export function makePetConfigSection(rt: {
           if (typeof m.notificationsEnabled === 'boolean') setNotifyEnabled(m.notificationsEnabled);
           if (typeof m.whisperImageEnabled === 'boolean') setWhisperImage(m.whisperImageEnabled);
           if (typeof m.chatImageEnabled === 'boolean') setChatImage(m.chatImageEnabled);
+          if (typeof m.restartNoticeEnabled === 'boolean') setRestartNotice(m.restartNoticeEnabled);
         })
         .catch(() => {
-          /* 成品拉取失败时保持默认（通知开、配图关） */
+          /* 成品拉取失败时保持默认（通知开、重启提醒开、配图关） */
         });
       return () => {
         alive = false;
@@ -332,6 +342,7 @@ export function makePetConfigSection(rt: {
             notificationsEnabled: v,
             whisperImageEnabled: whisperImage,
             chatImageEnabled: chatImage,
+            restartNoticeEnabled: restartNotice,
           }),
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -412,6 +423,7 @@ export function makePetConfigSection(rt: {
           notificationsEnabled: notifyEnabled,
           whisperImageEnabled: whisperImage,
           chatImageEnabled: chatImage,
+          restartNoticeEnabled: restartNotice,
         };
         const res = await fetch('/dsh-pet-7340/config', {
           method: 'PUT',
@@ -835,9 +847,10 @@ export function makePetConfigSection(rt: {
           ],
         }),
 
-        // 表情包配图开关（全局，随「保存」写入用户级配置；不即时写入——不改变正在进行的渲染）
+        // 全局开关（随「保存」写入用户级配置；不即时写入——重启提醒由 host 侧每次工具调用现读，保存即生效）
         ...(
           [
+            ['restartNoticeToggle', restartNotice, setRestartNotice] as const,
             ['whisperImageToggle', whisperImage, setWhisperImage] as const,
             ['chatImageToggle', chatImage, setChatImage] as const,
           ] as const
