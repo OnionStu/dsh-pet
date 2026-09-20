@@ -79,7 +79,10 @@ const BUBBLE_DURATION_MS = 10 * 1000;
 
 /** 内联 CSS —— 注入一次（官方插件标准做法） */
 const css = [
-  '.dsh-pet-root{position:fixed;z-index:40;pointer-events:none;user-select:none}',
+  // 宠物本体浮层：z-index 必须高于所有插件覆盖层（技能中心 9999、SSH 视图 60），
+  // 否则插件页打开时宠物被盖住、点不到「切换会话」卡；10000 同时高于 shell 自身弹层
+  // （chat 菜单 1100 / settings 1000），pointer-events:none 保证不挡其它 UI 的点击。
+  '.dsh-pet-root{position:fixed;z-index:10000;pointer-events:none;user-select:none}',
   '.dsh-pet-root[data-corner="bottom-right"]{right:var(--dsh-pet-mx,24px);bottom:var(--dsh-pet-my,0)}',
   '.dsh-pet-root[data-corner="bottom-left"]{left:var(--dsh-pet-mx,24px);bottom:var(--dsh-pet-my,0)}',
   '.dsh-pet-root[data-corner="top-right"]{right:var(--dsh-pet-mx,24px);top:var(--dsh-pet-my,0)}',

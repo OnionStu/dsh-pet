@@ -10,6 +10,8 @@
 // （「有审批优先审批卡」的二选一，杜绝多气泡重叠）。
 // 与 notify.ts（系统 toast）解耦：本引擎管「页内看得见」的提醒，toast 管「页外」的推送。
 
+import { handBackCenterColumn } from './hand-back';
+
 // ---------- 待交互条目窄接口（宽松取值，防御上游形状变化） ----------
 
 /** uiSession.pendingInteractions 的值（DSH 域自行声明 kind，这里只描述用到的面） */
@@ -95,7 +97,7 @@ function syncTitleBadge(count: number): void {
 
 /** 浮层样式：白泡+软糖体系数随 --dsh-pet-size（读自主宠物 root 的 CSS 变量）缩放 */
 const alertCss = [
-  '.dsh-pet-alerts{position:fixed;z-index:41;display:flex;flex-direction:column;gap:calc(var(--dsh-pet-size)*0.014);' +
+  '.dsh-pet-alerts{position:fixed;z-index:10001;display:flex;flex-direction:column;gap:calc(var(--dsh-pet-size)*0.014);' +
     'min-width:calc(var(--dsh-pet-size)*0.26);max-width:calc(var(--dsh-pet-size)*0.7);pointer-events:none;' +
     'font-family:"ShangshouSoftCandy","Yuanti SC","YouYuan","幼圆","Comic Sans MS","PingFang SC","Microsoft YaHei",sans-serif}',
   '.dsh-pet-alerts[hidden]{display:none}',
@@ -234,7 +236,12 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
   const root = createAlertsRoot();
 
   const openSession = (sessionId: string): void => {
-    if (typeof sessions.open === 'function') sessions.open(sessionId);
+    if (typeof sessions?.open === 'function') {
+      sessions.open(sessionId);
+      // 插件页（Team 看板/我的 PR/SSH/技能中心）要么盖住宠物卡、要么把对话区藏起来，
+      // 切换后必须让它们让位，用户才能看到切过去的会话（详见 hand-back.ts）。
+      handBackCenterColumn();
+    }
   };
 
   const render = (): void => {

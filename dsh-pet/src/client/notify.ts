@@ -20,6 +20,7 @@
 //（首拉记基线 seq，与 broadcast/work-status 首次记基线同语义）。
 
 import { frameToToast, truncate, NOTIFY_ICONS as ICON_NAMES, type NotifyFrame } from '../shared/notify';
+import { handBackCenterColumn } from './hand-back';
 
 // ---------- 聚焦门：仅在页面不可见/失焦时弹 ----------
 
@@ -106,6 +107,8 @@ function toast(title: string, body?: string, icon?: string, sessionId?: string):
       if (foreign && sessionId && typeof uiCtx?.sessions?.open === 'function') {
         try {
           uiCtx.sessions.open(sessionId);
+          // 与宠物切换卡同语义：跳会话后让打开的插件页让位，回到对话区（见 hand-back.ts）
+          handBackCenterColumn();
         } catch {
           /* 会话可能已关闭/不存在：降级为仅聚焦回页面 */
         }
