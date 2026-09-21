@@ -29,7 +29,9 @@ regex:/Users/[A-Za-z0-9._-]+==><home>
 # Apple Silicon 上的 Homebrew 前缀（机器特定）。
 # 注意：/usr/local/bin/electron 之类**不要**加进来 —— 那是 Electron 的
 # 标准系统安装位置回落，属跨平台源码，清洗会破坏代码。
-regex:<全局 node_modules>==><全局 node_modules>
+# 用 [/] 拆写 /opt/homebrew 与 node_modules：避免本文件里的规则字面量
+# 被 rewrite 自身命中（已踩过：工具文件被自己的规则替换）。
+regex:/opt[/]homebrew/lib[/]node_modules==><全局 node_modules>
 
 # ─────────────────────────────────────────────────────────────
 # 2. 凭据文件位置

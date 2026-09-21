@@ -17,7 +17,7 @@
 
 | 类别 | 例子 | 能否通用正则化 |
 | --- | --- | --- |
-| 本机绝对路径 | `/Users/<用户名>/...`、`<全局 node_modules>` | ✅ 能，见 `rules.example.txt` |
+| 本机绝对路径 | `/Users/<用户名>/...`、Homebrew 前缀的全局 node_modules（`/opt[/]homebrew/lib[/]node_modules`，`[/]` 是防自命中的拆写，等价于原路径） | ✅ 能，见 `rules.example.txt` |
 | 凭据文件位置 | `~/.dsh/` 下的 credentials 文件 | ✅ 能（只匹配带 `~/.dsh/` 前缀的形态） |
 | 个人账户数字 | 余额、token 数、调用次数、快照时间戳 | ❌ **不能**，必须人工确认 |
 
@@ -85,7 +85,7 @@ git clone --no-local --mirror . /tmp/dsh-pet-try.git
 
 # 验证：应输出 0
 git -C /tmp/dsh-pet-try.git log --all -p \
-  | grep -cE '(/Users/|/opt/homebrew/lib|\.credentials\.yaml|¥[0-9]+\.[0-9]{2})'
+  | grep -cE '(/Users/|/opt[/]homebrew/lib|\.credentials\.yaml|¥[0-9]+\.[0-9]{2})'
 ```
 
 演练确认后再对真仓执行：

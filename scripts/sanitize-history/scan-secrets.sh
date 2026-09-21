@@ -28,7 +28,9 @@ cd "$(git rev-parse --show-toplevel)" || exit 2
 PATTERNS=(
   '本机路径(Unix)|/Users/[A-Za-z0-9._-]+|'
   '本机路径(Windows)|C:\\\\Users\\\\[A-Za-z0-9._-]+|注意：storage-paths.test.ts 的合成夹具会命中，属误报'
-  '机器特定前缀|<全局 node_modules>|'
+  # 用 [/] 拆写 /opt/homebrew 与 node_modules：避免工具文件里出现完整字面量，
+  # 否则 rewrite 会连工具文件一起替换（本仓已踩过）。[/] 在正则中等价于 /。
+  '机器特定前缀|/opt[/]homebrew/lib[/]node_modules|'
   '凭据文件|\.credentials\.ya?ml|源码注释里的裸文件名属上游既有内容，不要改'
   '个人金额|¥[0-9]+\.[0-9]{2}|需人工判断：上游示例值(¥8.79/¥20)与正当字面量(¥0.00)不可改'
   '高熵密钥|(ghp_|gho_|sk-|AKIA|xox[baprs]-)[A-Za-z0-9_-]{16,}|'
