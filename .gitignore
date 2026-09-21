@@ -32,6 +32,11 @@ npm-debug.log*
 # ── 临时/备份目录 ──
 temp/
 
+# ── 历史脱敏的本地实值规则（含真实敏感值，只留本机）──
+#   模板见 scripts/sanitize-history/rules.example.txt（那个可以入库）
+scripts/sanitize-history/rules.local.txt
+scripts/sanitize-history/git_filter_repo.py
+
 # ── dsh-pet 构建产物（全部由 src/ 构建生成，不入仓库；克隆后先 npm run prepare:webm）──
 #   lib/                      tsdown bundle（lib/index.js、lib/client.js）+ tsc 声明（lib/types/*.d.ts，npm run types）
 #   runtime/electron-helper/shared-core.js  桌面共享纯逻辑（scripts/build-desktop-core.mjs 产出，window.PetShared）
