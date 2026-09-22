@@ -89,7 +89,7 @@ export const zh = {
   notifyToggleHint: '对话完成 / 生成失败 / 权限申请 / 用户选择，在窗口失焦时弹出系统级通知（桌面右下角）。',
   restartNoticeToggle: '重启提醒',
   restartNoticeToggleHint:
-    'agent 改完代码、需要你自己重启 DSH 才生效时，会调 notify_restart_required 工具——宠物头顶弹出「需要重启 DSH」提醒卡（与审批卡同一浮层 + 标签页 [N 待处理] 角标），点卡片跳回发起会话、点 × 消掉；你重启宿主后提醒自动消失。关闭后工具仍会被调用，但只回一句「已关闭、没弹卡」，agent 仍会在回复里告诉你要重启。与宠物一起保存后生效。',
+    'agent 改完代码、需要你自己重启 DSH 才生效时，会调 notify_restart_required 工具——宠物头顶弹出「需要重启 DSH」提醒卡（与审批卡同一浮层 + 标签页 [N 待处理] 角标），点卡片跳回发起会话、点 × 消掉；你重启宿主后提醒自动消失；连续 ≥2 张时自动折叠成「需要重启 DSH × N」汇总行 + 每卡一行标题（点汇总行展开看理由）。关闭后工具仍会被调用，但只回一句「已关闭、没弹卡」，agent 仍会在回复里告诉你要重启。与宠物一起保存后生效。',
   whisperImageToggle: '碎碎念配图',
   whisperImageToggleHint:
     '碎碎念时从表情包池随机抽一张，连同那句话一起显示（图片映射在配置文件顶层 memes）。token：碎碎念本来就每次生成都要调一次模型，配图只是把抽中那张的名称+描述（约 100 字符 / ≈60 token）加进同一次请求，增量可忽略。',
@@ -179,7 +179,7 @@ export const en = {
     'OS-level toasts (bottom-right of the desktop) for conversation completion, failures, permission requests, and questions — only while this window is unfocused.',
   restartNoticeToggle: 'Restart reminder',
   restartNoticeToggleHint:
-    'When the agent finishes a code change that only takes effect after you restart DSH yourself, it calls the notify_restart_required tool — a "restart DSH" card pops above the pet (same overlay as the approval card, plus an [N pending] tab badge). Click the card to jump back to that session, click × to dismiss it; the reminder clears itself once you actually restart the host. When off, the tool still runs but only reports "off, nothing shown", and the agent still tells you to restart in its reply. Takes effect after saving.',
+    'When the agent finishes a code change that only takes effect after you restart DSH yourself, it calls the notify_restart_required tool — a "restart DSH" card pops above the pet (same overlay as the approval card, plus an [N pending] tab badge). Click the card to jump back to that session, click × to dismiss it; the reminder clears itself once you actually restart the host. When 2+ cards pile up they fold into a "restart DSH × N" summary row with one title line per card (click the summary to expand for full reasons). When off, the tool still runs but only reports "off, nothing shown", and the agent still tells you to restart in its reply. Takes effect after saving.',
   whisperImageToggle: 'Whisper images',
   whisperImageToggleHint:
     'Attach one random meme from the pool to each whisper line (image mapping lives in the top-level `memes` config field). Tokens: a whisper already calls the model every cycle, so the image only appends the name + description of that one meme (~100 chars / ~60 tokens) to the same request — negligible.',

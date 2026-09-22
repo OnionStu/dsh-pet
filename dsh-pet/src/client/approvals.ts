@@ -13,7 +13,11 @@
 // （「有提醒优先提醒卡」的二选一，杜绝多气泡重叠）。
 // **行序**：重启行在前、审批行在后——浮层底边锚在宠物头顶，最后一行才贴着宠物，
 // 审批卡必须留在最底，否则会破坏已像素级调好的贴位（见下方 render 的说明）。
-// 标题角标 [N 待处理]：N = 全部提醒行数（非当前会话的审批 + 全部重启提醒），清零还原。
+// **重启折叠**：重启提醒 >= RESTART_FOLD_MIN 张时折成「汇总行（需要重启 DSH × N，点击
+// 展开/收起）+ 每张卡只留标题一行」——连续几张「需要重启 DSH · 理由」太占头顶，而理由
+// 在会话回复里本来就有（planAlertRows 纯函数编渲染计划，单测钉住规则）。
+// 标题角标 [N 待处理]：N = 全部提醒行数（非当前会话的审批 + 全部重启提醒；不含折叠
+// 汇总行，它是导航不是待处理条目），清零还原。
 // 与 notify.ts（系统 toast）解耦：本引擎管「页内看得见」的提醒，toast 管「页外」的推送。
 
 import {
@@ -44,8 +48,8 @@ interface SessionListStateLike {
   byId?: Record<string, { displayTitle?: unknown; title?: unknown }>;
 }
 
-/** 一条审批/选择题提醒行（渲染与点击的最小单元） */
-interface ApprovalAlertRow {
+/** 一条审批/选择题提醒行（渲染与点击的最小单元；导出供 planAlertRows 的单测构造） */
+export interface ApprovalAlertRow {
   /** 渲染 key：交互 key 优先，退化会话+kind（同会话可能挂多个审批） */
   key: string;
   sessionId: string;
@@ -57,7 +61,7 @@ interface ApprovalAlertRow {
 }
 
 /** 浮层里的一行（两条数据源的并集；RestartAlertRow 来自 ./restart-notice） */
-type AlertRow = ApprovalAlertRow | RestartAlertRow;
+export type AlertRow = ApprovalAlertRow | RestartAlertRow;
 
 /** 需要用户回应的交互 kind（审批 / 选择题 / 计划评审）；其余域值忽略 */
 const INTERACTIVE_KINDS = new Set(['approval', 'question', 'plan-review']);
@@ -96,6 +100,38 @@ export function deriveAlerts(
     });
   }
   return rows;
+}
+
+// ---------- 渲染计划：重启折叠（>= 阈值时折成汇总行 + 紧凑标题行） ----------
+// 折叠规则是纯数据变换，抽成 planAlertRows 供单测钉住（不碰 DOM，与 restart-notice
+// 的纯函数约定一致）；renderAlerts 只负责把计划渲染成 DOM。
+
+/** 折叠阈值：重启提醒达到这个张数就折（2 张起——两张「需要重启 DSH · 理由」已经重复出戏） */
+export const RESTART_FOLD_MIN = 2;
+
+/** 渲染计划的一行：summary = 重启折叠汇总行（点击切换展开/收起）；row = 提醒行
+ * （compact = 折叠态紧凑标题行，只渲染「● 「标题」」一行，理由收起来） */
+export type AlertPlanEntry =
+  { type: 'summary'; count: number; expanded: boolean } | { type: 'row'; row: AlertRow; compact: boolean };
+
+/**
+ * 把「重启行 + 审批行」编成渲染计划（纯函数）：
+ * - 重启行 >= RESTART_FOLD_MIN 时计划最前插入汇总行（展开态也保留，便于再收起）；
+ * - 折叠态（默认）：重启行全部 compact；展开态：重启行完整渲染（理由可见）；
+ * - 审批行永不折叠、恒排重启块之后（贴宠物头顶的位置规则，见 render）。
+ */
+export function planAlertRows(
+  restartRows: readonly RestartAlertRow[],
+  approvalRows: readonly ApprovalAlertRow[],
+  restartExpanded: boolean,
+): AlertPlanEntry[] {
+  const foldable = restartRows.length >= RESTART_FOLD_MIN;
+  const compact = foldable && !restartExpanded;
+  const plan: AlertPlanEntry[] = [];
+  if (foldable) plan.push({ type: 'summary', count: restartRows.length, expanded: restartExpanded });
+  for (const row of restartRows) plan.push({ type: 'row', row, compact });
+  for (const row of approvalRows) plan.push({ type: 'row', row, compact: false });
+  return plan;
 }
 
 // ---------- 标签页标题角标：N>0 加 [N 待处理] 前缀，清零还原 ----------
@@ -160,6 +196,17 @@ const alertCss = [
     'line-height:calc(var(--dsh-pet-size)*0.042);text-align:center;border-radius:50%;' +
     'font-size:calc(var(--dsh-pet-size)*0.038);color:rgba(43,43,43,.38);cursor:pointer}',
   '.dsh-pet-alert-row .dsh-pet-alert-close:hover{background:rgba(0,0,0,.07);color:rgba(43,43,43,.75)}',
+  // 重启折叠：紧凑标题行收紧上下 padding（一卡一行高），小字标题去掉下外边距
+  // （下面没有正文行了，保持垂直居中）。汇总行**不加粗**——软糖体没有真正的粗体
+  // 字形，font-weight 只会触发浏览器合成假粗体，糊成一团很出戏
+  '.dsh-pet-alert-row[data-fold="compact"]{padding-top:calc(var(--dsh-pet-size)*0.009);' +
+    'padding-bottom:calc(var(--dsh-pet-size)*0.009)}',
+  '.dsh-pet-alert-row[data-fold="compact"] .dsh-pet-alert-label{margin-bottom:0}',
+  // 汇总行右侧的展开/收起指示（▾/▴）：与 × 同位（汇总行没有 ×，不冲突）
+  '.dsh-pet-alert-row .dsh-pet-alert-foldmark{position:absolute;top:calc(var(--dsh-pet-size)*0.004);' +
+    'right:calc(var(--dsh-pet-size)*0.012);width:calc(var(--dsh-pet-size)*0.042);height:calc(var(--dsh-pet-size)*0.042);' +
+    'line-height:calc(var(--dsh-pet-size)*0.042);text-align:center;font-size:calc(var(--dsh-pet-size)*0.03);' +
+    'color:rgba(43,43,43,.38);pointer-events:none}',
 ].join('\n');
 
 /** 只注入一次 */
@@ -222,31 +269,69 @@ function setPetBubblesHidden(hidden: boolean): void {
   else host.removeAttribute('data-dsh-pet-alerts');
 }
 
-/** 行列表渲染：白泡卡片，整行点击 → 切会话；重启提醒行多一个 ×（消除，不跳转） */
+/** 蓝点 + 文本行的公共片段（完整行的理由、汇总行的计数用它；紧凑标题行走 label 样式） */
+function dotText(content: string): HTMLElement {
+  const text = document.createElement('div');
+  text.className = 'dsh-pet-alert-text';
+  const dot = document.createElement('span');
+  dot.className = 'dsh-pet-alert-dot';
+  dot.textContent = '●';
+  text.appendChild(dot);
+  text.appendChild(document.createTextNode(content));
+  return text;
+}
+
+/** 重启折叠汇总行：「● 需要重启 DSH × N」+ 右侧 ▾/▴，整行点击切换展开/收起（无 ×） */
+function renderSummaryRow(count: number, expanded: boolean, toggleFold: () => void): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'dsh-pet-alert-row';
+  el.dataset.kind = 'restart'; // 蓝点 + relative + 右侧留位（与重启行同规则，放 foldmark）
+  el.dataset.fold = 'summary';
+  el.title = expanded ? '收起重启提醒' : '展开重启提醒（看完整理由）';
+  el.appendChild(dotText('需要重启 DSH × ' + count));
+  const mark = document.createElement('span');
+  mark.className = 'dsh-pet-alert-foldmark';
+  mark.textContent = expanded ? '▴' : '▾';
+  el.appendChild(mark);
+  el.addEventListener('click', toggleFold);
+  return el;
+}
+
+/** 行列表渲染（吃 planAlertRows 的计划）：白泡卡片，整行点击 → 切会话；
+ *  重启提醒行多一个 ×（消除，不跳转）；折叠态紧凑行只渲染小字「标题」一行。 */
 function renderAlerts(
   root: HTMLElement,
-  rows: AlertRow[],
+  plan: AlertPlanEntry[],
   openSession: (sessionId: string) => void,
   dismissRestart: (sessionId: string) => void,
+  toggleRestartFold: () => void,
 ): void {
   root.replaceChildren();
-  for (const row of rows) {
+  for (const entry of plan) {
+    if (entry.type === 'summary') {
+      root.appendChild(renderSummaryRow(entry.count, entry.expanded, toggleRestartFold));
+      continue;
+    }
+    const { row, compact } = entry;
     const el = document.createElement('div');
     el.className = 'dsh-pet-alert-row';
     el.dataset.kind = row.kind; // CSS 据此切点色 / 留 × 位置（见 alertCss）
+    if (compact) el.dataset.fold = 'compact';
     el.title = '切到会话：' + row.label;
-    const label = document.createElement('div');
-    label.className = 'dsh-pet-alert-label';
-    label.textContent = '「' + row.label + '」';
-    const text = document.createElement('div');
-    text.className = 'dsh-pet-alert-text';
-    const dot = document.createElement('span');
-    dot.className = 'dsh-pet-alert-dot';
-    dot.textContent = '●';
-    text.appendChild(dot);
-    text.appendChild(document.createTextNode(row.text));
-    el.appendChild(label);
-    el.appendChild(text);
+    if (compact) {
+      // 折叠态紧凑行：单行小字标题（与完整卡的 label 同款：0.036、62% 灰、无蓝点——
+      // 蓝点由汇总行承担）；理由收起来（完整理由在会话回复里，展开可看）
+      const label = document.createElement('div');
+      label.className = 'dsh-pet-alert-label';
+      label.textContent = '「' + row.label + '」';
+      el.appendChild(label);
+    } else {
+      const label = document.createElement('div');
+      label.className = 'dsh-pet-alert-label';
+      label.textContent = '「' + row.label + '」';
+      el.appendChild(label);
+      el.appendChild(dotText(row.text));
+    }
     if (row.kind === 'restart') {
       const close = document.createElement('span');
       close.className = 'dsh-pet-alert-close';
@@ -313,6 +398,9 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
   /** 重启提醒当前快照（由轮询回调更新） */
   let restartItems: RestartNoticeItem[] = [];
 
+  /** 重启折叠状态：true = 展开看完整理由（默认折叠；< RESTART_FOLD_MIN 张时计划层忽略它） */
+  let restartExpanded = false;
+
   // 下面 render / dismissRestart 用**函数声明**（而非 const 箭头）：两者互相引用、
   // 且 dismissRestart 还要用后面才创建的 restartPoll——函数声明会提升，调用时才解析引用，
   // 不必为了避开「先声明后使用」把逻辑拆成两半。
@@ -329,24 +417,30 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
       .finally(() => restartPoll.resync());
   }
 
+  /** 汇总行点击：折叠 ⇄ 展开（看完整理由） */
+  function toggleRestartFold(): void {
+    restartExpanded = !restartExpanded;
+    render();
+  }
+
   function render(): void {
     const pending = approvalsAvailable
       ? (pendingSource?.getSnapshot?.() as ReadonlyMap<string, PendingEntry> | undefined)
       : undefined;
     const list = approvalsAvailable ? (listSource?.getSnapshot?.() as SessionListStateLike | undefined) : undefined;
     const shared = list ?? {};
-    // **行序**：重启行在前、审批行在后。浮层是「底边锚在宠物头顶」的弹性列（见 placeAlerts），
+    // **行序**：重启块在前、审批行在后。浮层是「底边锚在宠物头顶」的弹性列（见 placeAlerts），
     // 只有最后一行贴着宠物——审批卡必须留在最底，否则会破坏已像素级调好的贴位。
-    const rows: AlertRow[] = [
-      ...deriveRestartRows(restartItems, shared),
-      ...deriveAlerts(pending ?? new Map(), shared),
-    ];
-    renderAlerts(root, rows, openSession, dismissRestart);
-    syncTitleBadge(rows.length);
+    const restartRows = deriveRestartRows(restartItems, shared);
+    const approvalRows = deriveAlerts(pending ?? new Map(), shared);
+    const plan = planAlertRows(restartRows, approvalRows, restartExpanded);
+    renderAlerts(root, plan, openSession, dismissRestart, toggleRestartFold);
+    // 角标只数真实待处理条目（重启 + 审批）；折叠汇总行是导航，不计入
+    syncTitleBadge(restartRows.length + approvalRows.length);
     // 有提醒行 → 显示浮层并贴到宠物头顶，藏掉宠物自身气泡（二选一）；无 → 隐藏还原
-    root.hidden = rows.length === 0;
-    setPetBubblesHidden(rows.length > 0);
-    if (rows.length > 0) placeAlerts(root);
+    root.hidden = plan.length === 0;
+    setPetBubblesHidden(plan.length > 0);
+    if (plan.length > 0) placeAlerts(root);
   }
 
   render(); // 首帧（页面加载即生效：已挂着的审批立即可见；重启提醒由下面轮询首拍补上）
