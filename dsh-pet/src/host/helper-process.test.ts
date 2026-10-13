@@ -11,21 +11,44 @@
  */
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter, once } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
   HELPER_STABLE_MS,
+  HELPER_STOP_GRACE_MS,
   HelperProcess,
   dshHomeDir,
   defaultElectronExe,
+  ensureElectronDownload,
   hasGraphicalDisplay,
   helperRunIsStable,
+  helperSpawnEnv,
   restartBackoffDelayMs,
   resolveElectronPath,
   shouldCircuitBreak,
 } from './helper-process.ts';
+
+test('Electron 安装目录无法创建时返回 undefined，不产生未处理拒绝', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-pet-install-'));
+  const savedHome = process.env.DSH_HOME;
+  t.after(() => {
+    if (savedHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = savedHome;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.DSH_HOME = dir;
+  // 跨平台复现：同名普通文件阻止创建目录，不依赖 chmod 或管理员权限。
+  writeFileSync(join(dir, 'electron'), 'occupied');
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (message: string) => warnings.push(message));
+  t.mock.method(console, 'log', () => {});
+  assert.equal(await ensureElectronDownload(), undefined);
+  assert.ok(warnings.some((message) => message.includes('ensure failed:')));
+  assert.ok(warnings.some((message) => message.includes('DSH_PET_ELECTRON_PATH')));
+});
 
 /** 建一个隔离的临时目录,并归还原 DSH_HOME / DSH_PET_ELECTRON_PATH 环境变量 */
 function withIsolatedHome(fn: (dir: string) => void): void {
@@ -137,7 +160,7 @@ describe('resolveElectronPath —— 候选优先级', () => {
             ? join('Electron.app', 'Contents', 'MacOS', 'Electron')
             : 'electron';
       const landed = join(dir, 'dshhome', 'electron', rel);
-      mkdirSync(dirname(landed), { recursive: true }); // darwin 的 landed 多三层 Electron.app/Contents/MacOS
+      mkdirSync(dirname(landed), { recursive: true });
       writeFileSync(landed, '');
       assert.equal(resolveElectronPath([]), landed);
     });
@@ -266,4 +289,181 @@ describe('HelperProcess —— 退避/熔断的**接线**（纯函数之外，�
     assert.ok(tripped, '按用户设定的阈值应熔断');
     assert.match(tripped, /crashed 3 consecutive times/);
   });
+});
+
+describe('helperSpawnEnv —— spawn 环境构造（issue #63：ELECTRON_RUN_AS_NODE 必须删键）', () => {
+  test('宿主环境带着污染 → 构造出的 env 里没有这个键', () => {
+    // 宿主（DSH Desktop）自己就是 Electron 应用，process.env 里可能带着它；透传下去会让 helper
+    // 以纯 Node 模式启动、require('electron') 直接 MODULE_NOT_FOUND（崩→重启→12 次熔断）
+    const saved = process.env.ELECTRON_RUN_AS_NODE;
+    process.env.ELECTRON_RUN_AS_NODE = '1';
+    try {
+      const env = helperSpawnEnv(1234);
+      assert.equal('ELECTRON_RUN_AS_NODE' in env, false, '必须删键：设空串会让 Electron 直接 abort');
+      assert.equal(env.DSH_PET_HOST_PID, '1234');
+    } finally {
+      if (saved === undefined) delete process.env.ELECTRON_RUN_AS_NODE;
+      else process.env.ELECTRON_RUN_AS_NODE = saved;
+    }
+  });
+
+  test('调用方在 extra 里显式给这个键 → 同样删掉（我们要的永远是真正的 Electron 主进程）', () => {
+    const env = helperSpawnEnv(7, { ELECTRON_RUN_AS_NODE: '1', DSH_PET_BRIDGE: '1' });
+    assert.equal('ELECTRON_RUN_AS_NODE' in env, false);
+    assert.equal(env.DSH_PET_BRIDGE, '1');
+    assert.equal(env.DSH_PET_HOST_PID, '7');
+  });
+
+  test('其余宿主环境变量照常继承、extra 覆盖同名键', () => {
+    const saved = process.env.DSH_PET_TEST_MARKER;
+    process.env.DSH_PET_TEST_MARKER = 'from-host';
+    try {
+      const env = helperSpawnEnv(1, { DSH_PET_TEST_MARKER: 'from-extra' });
+      assert.equal(env.DSH_PET_TEST_MARKER, 'from-extra');
+      assert.equal(helperSpawnEnv(1).DSH_PET_TEST_MARKER, 'from-host');
+    } finally {
+      if (saved === undefined) delete process.env.DSH_PET_TEST_MARKER;
+      else process.env.DSH_PET_TEST_MARKER = saved;
+    }
+  });
+});
+
+describe('HelperProcess.stopAndWait —— 停止要等进程真正退出（issue #64）', () => {
+  /** 假子进程：只需要 kill/exitCode/exit 事件这三样，避免测试里真 spawn（stdio 走 pipe） */
+  class FakeChild extends EventEmitter {
+    exitCode: number | null = null;
+    signalCode: NodeJS.Signals | null = null;
+    signals: string[] = [];
+    kill(signal?: string): boolean {
+      this.signals.push(signal ?? 'SIGTERM');
+      return true;
+    }
+    exit(): void {
+      this.exitCode = 0;
+      this.emit('exit', 0, null);
+    }
+  }
+
+  function fakeHelper(timeoutMs: number) {
+    const logs: string[] = [];
+    const hp = new HelperProcess({}, { warn: (m: unknown) => logs.push(String(m)) });
+    const fake = new FakeChild();
+    (hp as unknown as { child?: FakeChild }).child = fake;
+    return { fake, logs, stop: () => hp.stopAndWait('test', timeoutMs) };
+  }
+
+  test('正常退出：只发 SIGTERM、不升级，Promise 在 exit 时 resolve', async () => {
+    const { fake, stop } = fakeHelper(1000);
+    const p = stop();
+    setTimeout(() => fake.exit(), 10);
+    await p;
+    assert.deepEqual(fake.signals, ['SIGTERM']);
+  });
+
+  test('超时未退 → 升级 SIGKILL（不是无限等）', async () => {
+    const { fake, logs, stop } = fakeHelper(20);
+    const p = stop();
+    setTimeout(() => fake.exit(), 40); // 模拟"只在 SIGKILL 之后才退"
+    await p;
+    assert.deepEqual(fake.signals, ['SIGTERM', 'SIGKILL']);
+    assert.ok(
+      logs.some((l) => l.includes('SIGKILL')),
+      '升级动作要有日志',
+    );
+  });
+
+  test('连 SIGKILL 都不退 → 宽限期后仍 resolve（绝不挂住配置保存）', async (t) => {
+    // FakeChild has no process handle to keep the event loop alive while
+    // production's unref'ed watchdogs wait. Advance both deadlines explicitly.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { fake, stop } = fakeHelper(20);
+    let settled = false;
+    const pending = stop().then(() => {
+      settled = true;
+    });
+    t.mock.timers.tick(20);
+    assert.deepEqual(fake.signals, ['SIGTERM', 'SIGKILL']);
+    await Promise.resolve();
+    assert.equal(settled, false);
+    t.mock.timers.tick(HELPER_STOP_GRACE_MS);
+    await pending;
+    assert.equal(settled, true);
+  });
+
+  test('已经退出的子进程 → 立即 resolve，不挂监听', async () => {
+    const { fake, stop } = fakeHelper(1000);
+    fake.exitCode = 0;
+    const started = Date.now();
+    await stop();
+    assert.ok(Date.now() - started < 50);
+    assert.deepEqual(fake.signals, ['SIGTERM']);
+  });
+});
+
+describe('HelperProcess failed spawn recovery', () => {
+  test('keeps a running child after a non-spawn error', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-pet-live-child-'));
+    const hp = new HelperProcess(
+      { command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: dir },
+      {},
+    );
+    try {
+      const child = hp.start()!;
+      await once(child, 'spawn');
+      child.emit('error', Object.assign(new Error('kill denied'), { code: 'EPERM' }));
+      assert.equal(hp.start(), child, 'a live child must not be replaced after a failed operation');
+    } finally {
+      await hp.stopAndWait('test-cleanup', 100);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const code of ['ENOENT', 'EACCES']) {
+    test(
+      `retries ${code} after the executable is repaired`,
+      { skip: code === 'EACCES' && process.platform === 'win32', timeout: 10000 },
+      async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'dsh-pet-spawn-'));
+        const command = join(dir, 'electron');
+        if (code === 'EACCES') writeFileSync(command, '#!/bin/sh\nexit 0\n', { mode: 0o600 });
+        const options = { command, args: ['-e', 'console.log("helper-recovered")'], cwd: dir };
+        const logs: string[] = [];
+        let recovered!: () => void;
+        const ready = new Promise<void>((resolve) => {
+          recovered = resolve;
+        });
+        const hp = new HelperProcess(options, {
+          warn: (message) => {
+            logs.push(String(message));
+          },
+          error: (message) => {
+            logs.push(String(message));
+          },
+          debug: (message) => {
+            if (String(message).includes('helper-recovered')) recovered();
+          },
+        });
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const child = hp.start()!;
+          const [error] = await once(child, 'error');
+          assert.equal(error.code, code);
+          // Repair the configured executable before the existing backoff expires.
+          options.command = process.execPath;
+          await Promise.race([
+            ready,
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(() => reject(new Error('helper did not recover after failed spawn')), 5000);
+            }),
+          ]);
+          assert.equal(logs.filter((line) => line.includes('failed to start')).length, 1);
+          assert.equal(logs.filter((line) => line.includes('restarting in')).length, 1);
+        } finally {
+          clearTimeout(timeout);
+          await hp.stopAndWait('test-cleanup', 100);
+          rmSync(dir, { recursive: true, force: true });
+        }
+      },
+    );
+  }
 });

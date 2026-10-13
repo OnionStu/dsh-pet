@@ -100,7 +100,8 @@ describe('startSessionDeepLink —— 桌面提醒卡深链跳转', () => {
     let cleared = 0;
     const stop = startSessionDeepLink({
       sessionId: 's-target',
-      list: fake.list, open: fake.open,
+      list: fake.list,
+      open: fake.open,
       clearParam: () => {
         cleared += 1;
       },
@@ -120,7 +121,8 @@ describe('startSessionDeepLink —— 桌面提醒卡深链跳转', () => {
     let cleared = 0;
     const stop = startSessionDeepLink({
       sessionId: 's-target',
-      list: fake.list, open: fake.open,
+      list: fake.list,
+      open: fake.open,
       clearParam: () => {
         cleared += 1;
       },
@@ -148,7 +150,8 @@ describe('startSessionDeepLink —— 桌面提醒卡深链跳转', () => {
     let cleared = 0;
     const stop = startSessionDeepLink({
       sessionId: 's-gone',
-      list: fake.list, open: fake.open,
+      list: fake.list,
+      open: fake.open,
       clearParam: () => {
         cleared += 1;
       },
@@ -170,7 +173,8 @@ describe('startSessionDeepLink —— 桌面提醒卡深链跳转', () => {
     let cleared = 0;
     const stop = startSessionDeepLink({
       sessionId: 's-target',
-      list: fake.list, open: fake.open,
+      list: fake.list,
+      open: fake.open,
       clearParam: () => {
         cleared += 1;
       },
@@ -194,7 +198,8 @@ describe('startSessionDeepLink —— 桌面提醒卡深链跳转', () => {
     const warnings: string[] = [];
     const stop = startSessionDeepLink({
       sessionId: 's-target',
-      list: fake.list, open: fake.open,
+      list: fake.list,
+      open: fake.open,
       warn: (message) => warnings.push(message),
       ...clock,
     });
@@ -211,7 +216,8 @@ describe('startSessionDeepLink —— 桌面提醒卡深链跳转', () => {
     let cleared = 0;
     const stop = startSessionDeepLink({
       sessionId: 's-target',
-      list: fake.list, open: fake.open,
+      list: fake.list,
+      open: fake.open,
       clearParam: () => {
         cleared += 1;
       },
@@ -230,7 +236,8 @@ describe('startSessionDeepLink —— 桌面提醒卡深链跳转', () => {
     const fake = makeSessions({ listed: new Set() });
     const stop = startSessionDeepLink({
       sessionId: 's-target',
-      list: fake.list, open: fake.open,
+      list: fake.list,
+      open: fake.open,
       ...clock,
     });
     stop();

@@ -298,9 +298,7 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
   // 轮询静默空转，与重启路同语义——host 两半服务同源，单开一半才罕见
   const approvalsAvailable = Boolean(listSource?.subscribe);
   if (!approvalsAvailable) {
-    console.warn(
-      '[dsh-pet] 跨会话审批提醒不可用：sessions.list 缺失（重启提醒不受影响）',
-    );
+    console.warn('[dsh-pet] 跨会话审批提醒不可用：sessions.list 缺失（重启提醒不受影响）');
   }
 
   const root = createAlertsRoot();

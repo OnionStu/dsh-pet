@@ -32,7 +32,11 @@ describe('derivePendingRows —— host /alerts 派生审批/选择题行', () =
   });
 
   test('标签优先级：客户端 displayTitle > host label > id 前 8 位', () => {
-    const withTitle = derivePendingRows([item({ sessionId: 's1' })], { byId: { s1: { displayTitle: '修桌面端尺寸' } } }, '');
+    const withTitle = derivePendingRows(
+      [item({ sessionId: 's1' })],
+      { byId: { s1: { displayTitle: '修桌面端尺寸' } } },
+      '',
+    );
     assert.equal(withTitle[0].label, '修桌面端尺寸');
     const hostLabel = derivePendingRows([item({ sessionId: 's1', label: '来自host' })], {}, '');
     assert.equal(hostLabel[0].label, '来自host');
@@ -42,7 +46,11 @@ describe('derivePendingRows —— host /alerts 派生审批/选择题行', () =
 
   test('kind 收敛：approval 保持，question 与 plan-review 归入「等你选择」一档', () => {
     const rows = derivePendingRows(
-      [item({ kind: 'approval', text: '等你审批 · Bash' }), item({ kind: 'question' }), item({ kind: 'plan-review', text: '等你评审计划' })],
+      [
+        item({ kind: 'approval', text: '等你审批 · Bash' }),
+        item({ kind: 'question' }),
+        item({ kind: 'plan-review', text: '等你评审计划' }),
+      ],
       {},
       '',
     );

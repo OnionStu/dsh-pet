@@ -5,9 +5,14 @@
  * 窗口 = 宠物包围盒 + 四周外扩余量（renderer 的 WINDOW_MARGIN_RATIO，为气泡/弹窗预留空间），
  * 宠物移动时 renderer 逐帧上报 bounds，本进程 setContentBounds 让窗口跟随宠物。
  *
- * 为什么是「局部小窗口」而不是「全屏透明画布」：铺满整个工作区的透明置顶分层窗口
- * 会触发 Windows DWM 视频合成黑屏——浏览器里任何正在播放的视频（B 站/本地文件等）
- * 画面变黑、声音继续，悬停/点击桌宠都触发（实验结论：窗口不全屏就不黑）。
+ * 为什么是「局部小窗口」而不是「全屏透明画布」：全屏透明置顶窗会触发 Windows DWM 视频合成黑屏
+ * （播放中的视频画面变黑、声音继续）。触发与窗口**绝对尺寸无关**，需四项齐备：透明置顶 + 非点击穿透
+ * + 可聚焦且已聚焦 + **完整盖住视频窗**（98% 覆盖即安全；一个仅占屏幕 26% 的小窗同样能触发，issue #60
+ * 的单变量实测矩阵）。本进程恰好会凑齐前三项——悬停宠物即整窗翻成可交互、show() 出去的窗口本就是
+ * 聚焦的——而全屏画布又把第四项白送（必然完整遮挡非全屏播放的视频），故"不做全屏画布"的结论不变，
+ * 只是理由换成这套条件；现有形态靠**默认整窗穿透 + 小窗几乎不可能完整遮挡视频窗**规避。
+ * （旧注释写作"窗口不全屏就不黑"，那是把 0.1.x 的「全屏画布 → 每宠小窗」与输入模型改造这两件
+ * 同时发生的事，混成了一个自变量。）
  * 输入：窗口默认**整窗点击穿透**（setIgnoreMouseEvents(true,{forward:true})），渲染端在光标
  * 进/出宠物身体命中区时经 pet:set-interactive 翻转可交互——透明像素不挡下层应用，
  * 与浏览器 overlay（仅 .dsh-pet-hit 可交互）严格对齐。
@@ -18,17 +23,48 @@
  * 经 stdin/stdout JSON 行协议转发宿主（helper-process.ts 的 BridgeHandler），
  * 宿主用与 HTTP 路由同一份 handlePetRoute 应答；素材应答带文件绝对路径，本进程读盘返回。
  * 无 DSH_PET_BRIDGE（手动 start-desktop / 开发流）时保持旧路径：渲染端直接 HTTP 访问宿主。
+ *
+ * 进程存亡（issue #56）：本进程的 stdout/stderr 是宿主给的管道，宿主一退出读端就消失（下一次写
+ * 就是 EPIPE，而 Electron 默认处理器只会弹框且不退出）。故有「宿主存活」一节：管道守卫 +
+ * 宿主 PID 探测，宿主没了就自己退——见那里的注释。
+ *
+ * 启动模式（issue #63）：若被以「纯 Node 模式」拉起（宿主透传了 ELECTRON_RUN_AS_NODE），内置
+ * electron 模块不会注册，下面的 require 会失败——报一句能定位原因的话再退出，别只留 MODULE_NOT_FOUND。
  */
-const { app, BrowserWindow, ipcMain, screen, shell, protocol } = require('electron');
+let electronApi;
+try {
+  electronApi = require('electron');
+} catch (error) {
+  process.stderr.write(
+    '[dsh-pet helper] 启动失败：本进程被以「纯 Node 模式」拉起（ELECTRON_RUN_AS_NODE=' +
+      JSON.stringify(process.env.ELECTRON_RUN_AS_NODE ?? null) +
+      '）。该变量必须在 spawn 前删除（见 src/host/helper-process.ts 的 helperSpawnEnv），' +
+      '运行期再删无效，设成空串会让 Electron 直接 abort。原始错误：' +
+      (error instanceof Error ? error.message.split('\n')[0] : String(error)) +
+      '\n',
+  );
+  process.exit(3);
+}
+const { app, BrowserWindow, ipcMain, screen, shell, protocol } = electronApi;
 const path = require('node:path');
 const { execFileSync, execFile } = require('node:child_process');
 const { readFileSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
-const { decideWindowIgnore } = require('./pointer-target.js');
+const { decideWindowIgnore, pointerZone } = require('./pointer-target.js');
 // 其它应用全屏时让位的判定与状态机（窗口采集由 fullscreen-probe.jxa 负责）
 // 注意别名：本文件已有一个 parseProbeOutput（DPI 探测子进程的输出解析），两者不可同名
-const { createFullscreenGuard, parseProbeOutput: parseFullscreenProbe } = require('./fullscreen-guard.js');
+const {
+  createFullscreenGuard,
+  fullscreenGuardSupported,
+  parseProbeOutput: parseFullscreenProbe,
+} = require('./fullscreen-guard.js');
+// 置顶看门狗：WS_EX_TOPMOST 只是样式位，不等于窗口真的在置顶带（见 topmost-watchdog.js 头部）
+const { TOPMOST_WATCHDOG_TICK_MS, shouldReassertTopmost } = require('./topmost-watchdog.js');
+// 宿主存活判定（issue #56：宿主退出 → 管道断开 → 自己退，绝不弹框、绝不留僵尸）
+const { HOST_POLL_MS, hostIsGone, isBrokenPipeError, parseHostPid } = require('./host-liveness.js');
+// 全局 DPI 线性化的纯判定与换算（含平台例外：macOS 的 DIP 已是「点」，无需补偿；见该文件头）
+const { shouldLinearize, resolveForcedScale, resolvePetScale } = require('./dpi-linearization.js');
 
 // 允许无用户手势直接播放（余额动画等）
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -43,6 +79,46 @@ const DPI_PROBE = process.env.DSH_PET_DPI_PROBE === '1';
 /** 探测进程的输出标记（父进程按它抓值） */
 const DPI_MARK = 'dsh-pet-primary-scale:';
 
+// ---------- 宿主存活（issue #56）：管道断开 / 父进程消失 → 自己退出 ----------
+//
+// 【为什么必须自己退】宿主退出后，它在 helper 的 stdout/stderr 上握着的管道读端一起关闭；helper
+// 下一次写（bridge 协议行 —— 渲染端每秒至少一条 /state 轮询）拿到 EPIPE。未处理的 'error'
+// 事件 = 未捕获异常，而 Electron 主进程自带的处理器只弹一个模态框、**且不退出**
+// （lib/browser/init.ts 原文注释："Don't quit on fatal error"）—— 桌宠就此卡死、进程赖着不走。
+// 真机实测（宿主存活、只切断 stdout 管道）：那次写之后主线程彻底停住，14 秒里一次心跳都没有，
+// 进程也一直没有退出。
+//
+// 两条路都要有，缺一不可：
+//   ① 管道守卫：任何一次写失败都不许变成异常；管道断开本身就是"宿主已死"的铁证 → 立刻退。
+//      它只在**上层真的写**的时候才触发；
+//   ② 宿主探测：每 HOST_POLL_MS 用 kill(pid, 0) 问一次宿主还在不在，ESRCH 即退。
+//      渲染端崩了/根本没起来时一次写都不会发生，只有 ② 能收敛。
+// 两条路都只经 exitForDeadHost()，且只退一次。
+let hostGone = false;
+/** 宿主没了 → 立刻退出。这里**不能**再打日志：管道已经断了，写只会再踩一次同一个错误 */
+function exitForDeadHost() {
+  if (hostGone) return;
+  hostGone = true;
+  app.exit(0); // 宿主消失是"环境要求我退"，不是自身崩溃，退出码 0
+}
+
+// ① 管道守卫：必须赶在**任何一次写**之前装上（probePrimaryScale 失败就会往 stderr 写）
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (error) => {
+    if (isBrokenPipeError(error)) exitForDeadHost();
+    // 其余流错误同样吞掉：Electron 的默认处理是弹模态框，任何流错误都不值得拿桌宠去换一个框
+  });
+}
+
+// ② 宿主探测：DSH_PET_HOST_PID 由宿主 spawn 时注入；未注入/非法 → parseHostPid 给 0 → 不探测（不误退）。
+// DPI 探测实例是一次性短命进程（它的父进程是 helper 而不是宿主），不参与这套机制。
+const HOST_PID = parseHostPid(process.env.DSH_PET_HOST_PID);
+if (!DPI_PROBE && HOST_PID > 0) {
+  setInterval(() => {
+    if (hostIsGone(HOST_PID)) exitForDeadHost();
+  }, HOST_POLL_MS).unref?.();
+}
+
 // Windows 透明分层窗口（WS_EX_LAYERED）在 DWM 硬件加速合成下存在多处缺陷：
 //   - 拖拽移动时窗口四周出现黑色边框（#37）
 //   - 大透明窗移动覆盖小透明窗时，被覆盖窗口内容丢失（显示"消失"）
@@ -52,7 +128,7 @@ if (process.platform === 'win32') {
   app.disableHardwareAcceleration();
 }
 
-// ---------- 全局 DPI 线性化（多显示器异构缩放的根因修复，**仅 Windows**） ----------
+// ---------- 全局 DPI 线性化（多显示器异构缩放的根因修复） ----------
 //
 // Windows 上 Chromium 的 DIP↔物理 换算是**逐显示器**的仿射变换，而且
 // ScreenWin::DIPToScreenRect(hwnd, rect) 用的是「hwnd 当前归属屏」的那一组参数：
@@ -83,11 +159,9 @@ if (process.platform === 'win32') {
 //
 // 环境变量 DSH_PET_FORCE_DSF：'0' = 关闭本机制；其它正数 = 强制该值（排障用，会踩上面的 bug）。
 //
-// 平台范围：整节只为 Windows 而设——上面那条仿射变换是 ScreenWin 的实现细节，macOS/Linux 没有。
-// macOS 上强制 DSF 不改变 CSS px↔点 的映射（窗口永远按点布局，DSF 只影响背板分辨率），
-// 于是 petScale() 的「物理像素补偿」退化成纯粹的放大：实测 Retina（primaryScale=2）→ petScale=2
-// → 整窗 setZoomFactor(2)，宠物 462 CSS px 被画成 924 点（浏览器 overlay 是 462 点），
-// 气泡/右键菜单/积分弹窗/聊天框一并 2×。故下面按 win32 门控（Linux 同理）。
+// 「要不要启用 / 强制成几 / 渲染端乘几」三条规则已抽到 dpi-linearization.js（纯函数、带单测）——
+// 其中包含一个平台例外：上面这套补偿的前提是「force-device-scale-factor 会把 DIP 换算成物理像素」，
+// 那是 Windows 的行为，macOS 上不成立。原因与实测数据见该文件头，本文件不再复述。
 //
 // 取值时机是个麻烦：switch 必须在 app ready 之前设，而那时 screen 模块还不可用。
 // 所以首次启动 spawn 一个自己的探测子进程（DSH_PET_DPI_PROBE=1，只打印 scaleFactor 就退出，
@@ -162,11 +236,10 @@ function probePrimaryScale() {
 let PRIMARY_SCALE = 0;
 /** 实际生效的强制缩放（0 = 未启用，坐标系维持修复前的逐屏 DIP） */
 let FORCED_SCALE = 0;
-// win32 门控：非 Windows 上强制 DSF 只降背板分辨率、不换坐标系，补偿纯属放大（见上节末段）。
-if (process.platform === 'win32' && !DPI_PROBE && process.env.DSH_PET_FORCE_DSF !== '0') {
+const FORCE_DSF = process.env.DSH_PET_FORCE_DSF;
+if (shouldLinearize({ platform: process.platform, dpiProbe: DPI_PROBE, forceDsf: FORCE_DSF })) {
   PRIMARY_SCALE = readCachedPrimaryScale() || probePrimaryScale();
-  const override = Number(process.env.DSH_PET_FORCE_DSF);
-  const forced = Number.isFinite(override) && override > 0 ? override : PRIMARY_SCALE > 0 ? 1 : 0;
+  const forced = resolveForcedScale({ forceDsf: FORCE_DSF, primaryScale: PRIMARY_SCALE });
   if (forced > 0) {
     app.commandLine.appendSwitch('force-device-scale-factor', String(forced));
     FORCED_SCALE = forced;
@@ -178,12 +251,20 @@ if (process.platform === 'win32' && !DPI_PROBE && process.env.DSH_PET_FORCE_DSF 
  * 线性化开启后 1 逻辑像素 = 1 物理像素，宠物按主屏缩放放大回原来的观感。
  */
 function petScale() {
-  const base = Number(process.env.DSH_PET_SCALE || '1') || 1;
-  return FORCED_SCALE > 0 && PRIMARY_SCALE > 0 ? base * (PRIMARY_SCALE / FORCED_SCALE) : base;
+  return resolvePetScale({
+    baseScale: process.env.DSH_PET_SCALE,
+    primaryScale: PRIMARY_SCALE,
+    forcedScale: FORCED_SCALE,
+  });
 }
 
 /** bridge 模式：DSH_PET_BRIDGE=1（宿主注入）。开启时注册 dsh-pet-bridge scheme + 管道转发 */
 const BRIDGE = process.env.DSH_PET_BRIDGE === '1';
+
+/** 「打开网站」这一项的去向（宿主按自身形态注入）：
+ *  'desktop' = 宿主是 DSH 桌面应用 → 唤起桌面应用主窗口；
+ *  'site'    = dsh web / 独立模式 / 手写 start-desktop（无该变量）→ 原行为：默认浏览器打开站点。 */
+const OPEN_TARGET = process.env.DSH_PET_OPEN_TARGET === 'desktop' ? 'desktop' : 'site';
 /** 协议行前缀（与 helper-process.ts 的 BRIDGE_PREFIX 一致） */
 const BRIDGE_PREFIX = 'dsh-pet-bridge:';
 
@@ -352,7 +433,7 @@ function fullscreenTick(guard) {
 
 /** 启动让位探测（仅 macOS：探测依赖 osascript 与 CoreGraphics，其它平台没有对应实现） */
 function startFullscreenGuard() {
-  if (!HIDE_ON_FULLSCREEN || process.platform !== 'darwin' || fullscreenTimer) return;
+  if (!HIDE_ON_FULLSCREEN || !fullscreenGuardSupported() || fullscreenTimer) return;
   const guard = createFullscreenGuard();
   fullscreenTimer = setInterval(() => fullscreenTick(guard), FULLSCREEN_POLL_MS);
 }
@@ -363,6 +444,8 @@ function stopFullscreenGuard() {
   clearInterval(fullscreenTimer);
   fullscreenTimer = undefined;
 }
+/** 每窗口「光标停在余量区且非 busy」的连续时长（ms）：到点由兜底通道强制恢复穿透 */
+const offBodyMs = new Map();
 
 /**
  * 桌面宠物列表（[{id,size}]）：宿主经 DSH_PET_PETS 透传（每只宠物一个窗口）。
@@ -459,8 +542,9 @@ function createPetWindows() {
       skipTaskbar: true,
       resizable: false,
       hasShadow: false,
-      // 可聚焦：对话输入框/菜单需要窗口焦点才能打字（focusable:false 会让输入框永远无法聚焦）；
-      // 平时整窗穿透（setIgnoreMouseEvents）不抢焦点，黑屏防护由「每宠一个小窗口」解决，与此无关
+      // 可聚焦：对话输入框/菜单需要窗口焦点才能打字（focusable:false 会让输入框永远无法聚焦）。
+      // 别把这里当成黑屏的无关项：可聚焦 + 已聚焦本身就是 DWM 视频黑屏的四项触发条件之一（见文件头），
+      // 而 show() 出来就是聚焦状态——真正在挡的是「默认整窗穿透」+「小窗几乎不可能完整遮挡视频窗」
       focusable: true,
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
@@ -511,21 +595,50 @@ function createPetWindows() {
       const b = win.getBounds();
       if (b.width < 8 || b.height < 8) return; // 尺寸还没落定（renderer 首帧上报前）
       const ignoring = windowIgnore.get(win.id) !== false;
-      const next = decideWindowIgnore(b, screen.getCursorScreenPoint(), ignoring, inputBusy.get(win.id) === true);
+      const busy = inputBusy.get(win.id) === true;
+      const point = screen.getCursorScreenPoint();
+      // 余量区停留计时：只在"非 busy 且在余量区"时累加，离开余量区即清零；busy 期间不累加。
+      const zone = pointerZone(b, point);
+      const nextMs = !busy && zone === 'margin' ? (offBodyMs.get(win.id) ?? 0) + POINTER_POLL_MS : 0;
+      offBodyMs.set(win.id, nextMs);
+      const next = decideWindowIgnore(b, point, ignoring, busy, nextMs);
       if (next !== ignoring) setWindowIgnore(win, next);
     }, POINTER_POLL_MS);
+    // [置顶看门狗] 建窗时那次 setAlwaysOnTop 之后再没人复查过：外部任何一次 z 序扰动都能让桌宠
+    // 沉到普通窗下面——而 `WS_EX_TOPMOST` 位还在（点击穿透的读-改-写会把它写回来），于是
+    // "是不是置顶"永远查得出 true、宠物却再也看不见，用户侧只能重启 helper 才回来。
+    // 这里低频重钉一次：落地就是 SetWindowPos(HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)，
+    // 不移动、不重绘、不抢焦点（判定的纯逻辑与全部依据见 topmost-watchdog.js）。
+    let lastTopmostAssertMs = Date.now();
+    const topmostTimer = setInterval(() => {
+      const nowMs = Date.now();
+      const due = shouldReassertTopmost({
+        nowMs,
+        lastAssertMs: lastTopmostAssertMs,
+        destroyed: win.isDestroyed(),
+        visible: win.isVisible(),
+        paused: pointerFallbackPaused,
+      });
+      if (!due) return;
+      lastTopmostAssertMs = nowMs;
+      win.setAlwaysOnTop(true, 'screen-saver');
+    }, TOPMOST_WATCHDOG_TICK_MS);
     win.on('closed', () => {
       clearInterval(pointerTimer);
+      clearInterval(topmostTimer);
       windows.delete(pet.id);
       lastRequestedBounds.delete(win.id);
       windowIgnore.delete(win.id);
       inputBusy.delete(win.id);
+      offBodyMs.delete(win.id);
     });
     win
       .loadFile('index.html', {
         query: {
           configUrl,
           bridge: BRIDGE ? '1' : '0',
+          // 工具项「打开网站」的文案按宿主形态自动变（见 sprite.js）：desktop=唤起桌面应用 / site=打开站点
+          openTarget: OPEN_TARGET,
           scale: String(scale),
           petIndex: String(pet.index),
           workAreaW: String(area.width),
@@ -775,12 +888,43 @@ app.whenReady().then(() => {
   // 右键菜单「打开网站」：交给**系统默认浏览器**打开（等效于网页里 Ctrl+点击链接新标签页），
   // 不建专属窗口——宠物窗口机制是透明小窗，不该承载常规网页浏览。URL 由渲染端从
   // configUrl 推导 = DSH webServer 端口，端口变化自动跟随
+  const openSite = (url) => {
+    // 宿主注入的已鉴权站点 URL（含本进程启动令牌）：DSH 只在 `GET /` 接受它并换发绑定 authority 的
+    // 浏览器 Cookie，裸 origin 在默认浏览器里必然 401（#87）。令牌等价登录态，所以**只在与目标同
+    // origin 时**才启用——绝不让它被带去别的站点；取不到该变量（旧宿主 / standalone / 手写
+    // start-desktop）时，行为与以前完全一致。
+    let target = url;
+    const authed = process.env.DSH_PET_SITE_URL || '';
+    if (/^https?:[/][/]/.test(authed)) {
+      try {
+        if (new URL(authed).origin === new URL(url).origin) target = authed;
+      } catch {
+        /* 形状不对：保持裸地址（原行为） */
+      }
+    }
+    shell.openExternal(target).catch((error) => {
+      console.error('[dsh-pet-desktop-helper] openExternal failed:', error);
+    });
+  };
+
+  // 去向由宿主形态决定（OPEN_TARGET，宿主按自身形态注入）：
+  //   desktop（宿主 = DSH 桌面应用）→ 用应用自注册的 dsh:// 协议把主窗口叫回前台：已运行则第二个实例
+  //     被单实例锁拦下、宿主收到 second-instance 后 focusPrimaryWindow()；未运行则协议直接把应用拉起来。
+  //     比 spawn 宿主 exe 干净——不必处理 ELECTRON_RUN_AS_NODE（spawn 继承它就成了 node 模式，起不了界面）
+  //     与安装路径探测。
+  //   site（dsh web / 独立模式）→ 原行为：系统默认浏览器打开站点。
   ipcMain.on('pet:open-site', (event, payload) => {
     const url = payload && typeof payload === 'object' ? String(payload.url || '') : '';
     if (!/^https?:[/][/]/.test(url)) return;
-    shell.openExternal(url).catch((error) => {
-      console.error('[dsh-pet-desktop-helper] openExternal failed:', error);
-    });
+    if (OPEN_TARGET === 'desktop') {
+      // 协议未注册（绿色版 / 注册表被清）时回落成打开站点，至少不是"点了没反应"
+      shell.openExternal('dsh://open').catch((error) => {
+        console.error('[dsh-pet-desktop-helper] open dsh:// failed, falling back to site:', error);
+        openSite(url);
+      });
+      return;
+    }
+    openSite(url);
   });
 
   // 显示器热更新：分辨率/缩放变化、插拔屏、旋转都会让桌面几何失效。原先几何只在

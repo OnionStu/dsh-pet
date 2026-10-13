@@ -208,8 +208,7 @@ export function createPendingAlerts(): {
 /** tool/result 里的 callId（宽松取值：当前代际在 message.toolCallId，旧代际在 content[0].toolCallId） */
 export function toolResultCallId(data: Record<string, unknown>): string {
   const message = data.message as
-    | { toolCallId?: unknown; source?: { callId?: unknown }; content?: unknown }
-    | undefined;
+    { toolCallId?: unknown; source?: { callId?: unknown }; content?: unknown } | undefined;
   const top = str(message?.toolCallId);
   if (top) return top;
   const fromSource = str(message?.source?.callId);

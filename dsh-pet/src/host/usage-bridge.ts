@@ -13,8 +13,8 @@
  * 定位：**可选增强**。dsh-usage 是第三方插件，被禁用/升级/接口变化都可能发生 →
  * 这里所有函数在任何异常下都返回 undefined，静默降级到本机折叠（usage-fold），绝不进关键路径。
  */
-import { normalizeProviderRoute, type UsageTotals } from './balance';
-import { totalTokens, type TokenUsageLike } from './usage-fold';
+import { normalizeProviderRoute } from './balance/index';
+import { totalTokens, type TokenUsageLike, type UsageTotals } from './usage-fold';
 
 /** loopback 拉取超时（ms）：它只是增强，卡住也不能拖慢 /balance */
 const OVERVIEW_TIMEOUT_MS = 3_000;

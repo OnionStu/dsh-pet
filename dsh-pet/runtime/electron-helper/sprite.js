@@ -51,8 +51,12 @@ class PetSprite {
     this.weights = pet.animationWeights || cfg.animationWeights;
     // 拖拽抛掷物理参数（顶层全局；拍平已吹入实例，兜底回全局/默认）
     this.physics = pet.physics || config.physics || S.DEFAULT_PHYSICS;
+    // 抛掷锁定在当前屏幕（根字段；拍平已吹入实例，兜底回主条目/默认）：
+    // true = 甩出去只在松手时所在那块屏内弹（屏缝当墙），false = 照常跨屏飞行
+    this.confineToScreen = pet.confineToScreen === true || config.confineToScreen === true;
     // 素材根按 assetRoot（文件宠物 = 配置文件前缀，多实例共享同一素材目录）或宠物 id 回落
-    this.assetBase = BASE + '/thumb/' + encodeURIComponent(pet.assetRoot || pet.id) + '/';
+    this.assetRoot = pet.assetRoot || pet.id;
+    this.assetBase = BASE + '/thumb/' + encodeURIComponent(this.assetRoot) + '/';
     this.front = 0; // 0 = A, 1 = B
     this.pending = null;
     this.gen = 0;
@@ -89,25 +93,23 @@ class PetSprite {
     // 余额气泡
     this.bubbleOn = false;
     this.bubbleTimer = null;
+    // 悬浮提示（替代原生 title 属性）：显隐 + 最近一次光标位置（**视口坐标**，见 renderTip）
+    this.tipOn = false;
+    this.tipCursor = null;
     this.balanceView = null;
     this.balanceWrap = false; // true = 当前余额气泡是不可用的「文字说明」（多行，需换行变体）
     this.prevTick = 0;
-    // 碎碎念（每只独立：自己轮询 /whisper?pet=<id>、自己的文本/配图与触发）
+    // 说话（碎碎念 / 命令气泡 / 对话回复三合一）：文本/配图由容器统一轮询 /state 后经
+    // showWhisper 送进来，本精灵不再自己轮询（改造前的 whisperLoopTimer / broadcastLoopTimer 已删）
     this.whisperOn = false;
     this.whisperTimer = null;
     this.whisperView = null;
     this.whisperText = '';
     // 配图名称（配置 memes 的键；whisperImageEnabled 开启时由 host 随机抽定，随文本一起来）
     this.whisperImage = '';
-    this.whisperBaseline = false;
-    this.prevWhisperTs = 0;
-    this.whisperLoopTimer = null;
-    // 命令触发气泡（/chat 命令）：1s 轻轮询 /broadcast，ts 变化即弹气泡（与碎碎念周期独立，不受开关门控）
-    this.broadcastLoopTimer = null;
-    this.broadcastBaseline = false;
-    this.prevBroadcastTs = 0;
-    // 工作状态联动（DSH 会话状态）：容器 1s 轮询 /work-status 递增 workTick → 本宠物按档位播动画+气泡。
-    // 气泡优先级 work > whisper > balance；workStatusEnabled 未启用时完全免疫（与浏览器一致）
+    // 工作状态联动（DSH 会话状态）：容器 1s 轮询 /state 递增 workTick → 本宠物按档位播动画+气泡。
+    // 气泡单槽优先级 终态任务 > whisper > balance > 非终态任务（见 renderBubble）；
+    // workStatusEnabled 未启用时完全免疫（与浏览器一致）
     this.workOn = false;
     this.workTimer = null;
     this.workText = null;
@@ -138,7 +140,6 @@ class PetSprite {
       v.muted = true;
       v.playsInline = true;
       v.autoplay = true;
-      v.title = this.pet.name;
     }
     this.hit = document.createElement('div');
     this.hit.className = 'pet-hit';
@@ -146,9 +147,15 @@ class PetSprite {
     this.hit.style.top = (S.HIT_BOX.y0 / 360) * 100 + '%';
     this.hit.style.width = ((S.HIT_BOX.x1 - S.HIT_BOX.x0) / 640) * 100 + '%';
     this.hit.style.height = ((S.HIT_BOX.y1 - S.HIT_BOX.y0) / 360) * 100 + '%';
-    this.hit.title = this.pet.name;
+    // 原先这里挂 title（原生系统提示）：已换成自绘浮层，但无障碍名称不能跟着丢
+    this.hit.setAttribute('aria-label', this.pet.name);
     this.bubble = document.createElement('div');
     this.bubble.className = 'pet-bubble';
+    // 悬浮提示：与气泡同处 this.el 内的绝对定位浮层，位置/翻转由 renderTip 决定，
+    // 样式走 shared 的 TOOLTIP_CSS（renderer.js 注入，与浏览器端同一份）
+    this.tip = document.createElement('div');
+    this.tip.className = S.TOOLTIP_CLASS;
+    this.tip.setAttribute('aria-hidden', 'true');
 
     stage.appendChild(this.videoA);
     stage.appendChild(this.videoB);
@@ -169,6 +176,8 @@ class PetSprite {
         : null;
     this.alertSig = ''; // 上一次渲染的行签名（变化才重渲染）
     this.alertRows = []; // 当前渲染的行（乐观移除/失败回滚都以轮询为事实来源）
+    this.el.appendChild(this.tip);
+    this.el.appendChild(stage);
     rootEl.appendChild(this.el);
     this.position();
 
@@ -189,10 +198,11 @@ class PetSprite {
     window.addEventListener(
       'mouseleave',
       () => {
-        // 光标离开窗口：菜单若开着立刻收起（菜单是窗口内 DOM，离开即不可达），再恢复穿透；
-        // 对话弹窗开着则不恢复——弹窗是窗口内 DOM，鼠标还要回来点输入框（与 menuOpen 同守卫）
+        // 光标离开窗口：菜单若开着立刻收起（菜单是窗口内 DOM，离开即不可达），再恢复穿透。
+        // 拖拽中与对话弹窗开着都不恢复：前者会绕过 busy 造成穿透并丢失 pointerup，
+        // 后者要留光标回来点输入框。
         this.closeMenu();
-        if (!this.chatOpen) this.setInteractive(false);
+        if (!this.chatOpen && !this.dragState.active) this.setInteractive(false);
       },
       { signal: ac.signal },
     );
@@ -234,8 +244,6 @@ class PetSprite {
     this.ac.abort();
     if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
     if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
-    if (this.whisperLoopTimer !== null) window.clearTimeout(this.whisperLoopTimer);
-    if (this.broadcastLoopTimer !== null) window.clearTimeout(this.broadcastLoopTimer);
     if (this.workTimer !== null) window.clearTimeout(this.workTimer);
     if (this.chatClose) {
       this.chatClose();
@@ -275,6 +283,10 @@ class PetSprite {
         fly ? toScreen(fly.vy) : 0,
       );
     }
+    // 位置变了（宠物漫游/拖拽/飞行，窗口跟着动）：提示若正显示必须重摆一次——它跟的是光标，
+    // 而光标存的是视口坐标，窗口一移，光标相对窗口的位置就变了，不重摆提示会跟着窗口漂走。
+    // 只在显示时重摆：漫游逐帧调本函数，没显示提示时不做无谓的 DOM 写入。
+    if (this.tipOn) this.renderTip();
   }
 
   // 角落/边距 → 窗口位置；拖拽后按会话内位置（比例）还原——**松手无任何边界夹取**，
@@ -366,9 +378,24 @@ class PetSprite {
     el.autoplay = true;
     el.playsInline = true;
     el.onended = nextOnce ? () => this.handleEnded() : null;
+    // 加载兜底（与浏览器 web 端 fetch+blob 的 10s 超时同义）：素材加载失败或卡住时必须释放
+    // pending，否则它永久挂起——之后相同目标会被防重分支吞掉、不同目标靠 gen 覆盖，
+    // 表现就是"点了没反应"（#62 报告的就是 web 端同一类问题，桌面端此前完全没有兜底）。
+    const loadGuard = (why) => {
+      if (!this.pending || this.pending.gen !== gen) return;
+      this.pending = null;
+      console.warn('[dsh-pet] 素材加载失败 pet=' + this.pet.id + ' anim=' + next + '：' + why + '（已释放本次切换）');
+    };
+    const loadTimer = window.setTimeout(() => loadGuard('10s 超时'), 10000);
+    el.onerror = () => {
+      window.clearTimeout(loadTimer);
+      loadGuard('video error');
+    };
     el.load();
     const onReady = () => {
       el.removeEventListener('loadeddata', onReady);
+      window.clearTimeout(loadTimer);
+      el.onerror = null;
       if (this.pending && this.pending.gen !== gen) return;
       const old = this.front === 0 ? this.videoA : this.videoB;
       el.classList.add('is-front');
@@ -403,7 +430,9 @@ class PetSprite {
     this.stopMove();
     const { animations, animationWeights } = { animations: this.animations, animationWeights: this.weights };
     const roll = Math.random();
-    const k = S.rollKind(roll, animationWeights);
+    // 宠物固定（pets[].fixedEnabled）：掷骰时把「转向 / 移动」两档权重按 0 算（与浏览器同一份
+    // 决策）——随机链不再让宠物自己翻朝向或走开。右键菜单点播与 /anim 接口不走这里，不受影响。
+    const k = S.rollKind(roll, animationWeights, { fixed: this.pet.fixedEnabled });
     let next;
     if (k === 'idle') {
       next = S.pick(animations.idle, this.anim);
@@ -626,6 +655,9 @@ class PetSprite {
     this.stopDragFollow();
     this.stopMove();
     // 边界 = 显示器工作区**并集**：空洞是墙（宠物再也飞不进不可见区域），屏缝不是墙（跨屏弹跳照旧）
+    // confineToScreen 开启时改为锁定**松手这一刻所在的那块屏**：屏缝同样当墙，只在目标屏内弹。
+    // 锁定屏在抛掷开始时定下、飞行途中不重取；relayout 改了屏数时由 throwStepRegion 退回不锁定。
+    const lockScreen = this.confineToScreen ? S.screenOfBox(this.throwSpaceOf(), px, py) : -1;
     const token = ++this.throwToken;
     let state = { x: px, y: py, vx, vy };
     let last = performance.now();
@@ -638,7 +670,7 @@ class PetSprite {
       const fallingVy = state.vy; // 本帧积分前的竖直速度（正=下落）：即落地冲击速度
       // 每帧重取：显示器变化时 relayout() 会让缓存失效，res.screen 必须与这一份对应
       const sp = this.throwSpaceOf();
-      const res = S.throwStepRegion(state, dt, sp, this.physics);
+      const res = S.throwStepRegion(state, dt, sp, this.physics, lockScreen);
       state = { x: res.x, y: res.y, vx: res.vx, vy: res.vy };
       this.throwState = state;
       // 上报飞行状态（节流 ~30ms）：主进程 broker 汇聚后广播，其它窗口用它做跨窗碰撞检测；
@@ -797,6 +829,9 @@ class PetSprite {
     this.stopMove();
     this.dragTrail = [];
     this.hit.classList.add('dragging');
+    // 收起悬浮提示：拖拽期间窗口逐帧跟随光标，指针始终在身体内、onMouseMove 的 inBody 恒为真，
+    // 不主动收就会让提示跟着宠物一路飘（松开后由 onPointerUp 按指针位置复位）
+    this.setTip(false);
     this.stopMove();
     try {
       this.hit.setPointerCapture(e.pointerId);
@@ -857,6 +892,21 @@ class PetSprite {
     this.stopDragFollow(); // 弹簧跟随立即停（位置定格在实时 this.pos）
     this.stage.style.transform = 'translateY(' + this.bottomPad + 'px)';
     this.syncInputBusy(); // 拖拽结束：交还给常规判定（幂等，非拖拽时多调一次不发 IPC）
+    // 提示复位：点击/拖拽期间收起的悬浮提示，指针仍在命中区内就恢复（与浏览器 handlePointerUp 同一处理）。
+    // 用 hitRect 几何判定而不是 getBoundingClientRect：命中区是窗口坐标里的权威几何，与 onMouseMove 同源。
+    // 位置有讲究：必须留在 syncInputBusy() 之后——pointer-target.test.ts 只扫本函数开头 400 字符
+    // 来找上报调用，插到它前面会把上报挤出窗口（该断言守的是"松手必上报，否则窗口粘在可交互"）。
+    if (e && Number.isFinite(e.clientX)) {
+      const r = this.hitRect;
+      const px = e.clientX - this.margin.l;
+      const py = e.clientY - this.margin.t;
+      // 先按松手位置更新光标再摆位/显示，否则会重现拖拽前的位置（与浏览器 placeTip 同一处理）
+      this.tipCursor = {
+        x: this.pos.x - this.margin.l + e.clientX,
+        y: this.pos.y - this.margin.t + e.clientY,
+      };
+      this.setTip(px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
+    }
     if (wasDragging) {
       this.justDragged = true;
       setTimeout(() => {
@@ -947,7 +997,65 @@ class PetSprite {
     if (window.petBridge) window.petBridge.setInteractive(next);
   }
 
+  /**
+   * 悬浮提示显隐（替代原先挂在命中层 title 上的原生系统提示）。
+   *
+   * 由 onMouseMove 的「光标在不在身体命中区」驱动，而不是 pointerenter/pointerleave：
+   * 身体外整窗是穿透的（main 的 setIgnoreMouseEvents(true, {forward:true})），光标离开身体时
+   * pointerleave 未必派发，提示会赖在屏幕上不走；几何判定与点击穿透翻转同源，才不会有第二种口径。
+   */
+  setTip(on) {
+    const next = !!on;
+    if (next === this.tipOn) return;
+    this.tipOn = next;
+    this.renderTip();
+  }
+
+  /**
+   * 悬浮提示渲染：文本 = 宠物显示名（host 已保证 name = rawName || id，不会空）；
+   * 位置 = 光标右下（装不下自动翻边），摆位判据与浏览器端共用 shared 的 tooltipPlacement。
+   *
+   * 坐标要绕一次：光标存的是**视口坐标**（this.tipCursor），而提示是 position:fixed、
+   * DOM 坐标相对**窗口**，所以这里减掉窗口原点（= 宠物包围盒左上角 − 四周余量）。
+   * 为什么要存视口坐标而不是窗口坐标：宠物自己走动/被抛出时窗口会移动，存视口坐标就只需
+   * 在这里按当前窗口原点重算一次，贴光标不会漂（sendBounds 每帧会调本函数）。
+   */
+  renderTip() {
+    if (this.tip.textContent !== this.pet.name) this.tip.textContent = this.pet.name;
+    const cursor = this.tipCursor;
+    if (cursor) {
+      const winX = this.pos.x - this.margin.l;
+      const winY = this.pos.y - this.margin.t;
+      const winW = this.size + this.margin.l + this.margin.r;
+      const winH = this.winH + this.margin.t + this.margin.b;
+      // 允许显示范围 = 窗口 ∩ 光标所在屏的工作区，两者必须取交集：
+      // 只按窗口夹，窗口能贴到屏幕外，提示会被画到看不见的地方；只按工作区夹，提示会落到窗口外
+      // （index.html 的 html,body 是 overflow:hidden，一样看不见）。
+      const area = S.resolveRect(AREAS, cursor.x, cursor.y) ?? { x: winX, y: winY, width: winW, height: winH };
+      const x0 = Math.max(winX, area.x);
+      const y0 = Math.max(winY, area.y);
+      const x1 = Math.min(winX + winW, area.x + area.width);
+      const y1 = Math.min(winY + winH, area.y + area.height);
+      const p = S.tooltipPlacement(
+        { x: cursor.x - winX, y: cursor.y - winY },
+        { w: this.tip.offsetWidth, h: this.tip.offsetHeight },
+        { x: x0 - winX, y: y0 - winY, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) },
+        this.size * S.TOOLTIP_GAP_RATIO,
+      );
+      this.tip.style.left = p.x + 'px';
+      this.tip.style.top = p.y + 'px';
+    }
+    this.tip.classList.toggle('is-on', this.tipOn);
+    window.__dshPetDebug.tooltipOn = this.tipOn;
+  }
+
   onMouseMove(e) {
+    // 拖拽态下所有按键已松开：说明 pointerup/pointercancel/lostpointercapture 全部丢失，
+    // 就地按松手收尾，否则 dragState.active 与 inputBusy 永久为 true（穿透永不恢复）。
+    if (this.dragState.active && e.buttons === 0) {
+      this.onPointerUp(e);
+      return;
+    }
     // 拖拽中窗口逐帧跟随光标、指针相对窗口坐标会有帧级抖动——强制保持可交互，绝不翻转（翻转会断拖拽）
     if (this.dragState.active) {
       this.setInteractive(true);
@@ -956,6 +1064,7 @@ class PetSprite {
     // 右键菜单/对话弹窗开启：整窗保持可交互（悬停菜单项/点输入框都不触发穿透翻转）；关闭后恢复命中区判定
     if (this.menuOpen || this.chatOpen) {
       this.setInteractive(true);
+      this.setTip(false); // 菜单/弹窗期间提示让位：光标已不在身体上，也不该跟浮层抢注意力
       return;
     }
     const r = this.hitRect;
@@ -966,12 +1075,19 @@ class PetSprite {
     const wy = Number.isFinite(e.clientY) ? e.clientY : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
     const px = wx - this.margin.l;
     const py = wy - this.margin.t;
-    const overBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+    const inBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+    // 光标位置存**视口坐标**（窗口原点 + 窗口内坐标）：窗口随宠物移动时贴光标不会漂，见 renderTip。
+    // 必须在 setTip 之前更新：setTip 变显隐时会立刻渲染一次，晚一步就会用上一次的光标摆位。
+    if (inBody) this.tipCursor = { x: this.pos.x - this.margin.l + wx, y: this.pos.y - this.margin.t + wy };
     // 提醒卡在宠物头顶的窗口余量区（身体命中区之外）：不算进来的话，光标一移到卡片上就被
     // 翻回穿透，卡片点不动、也滚不动。主进程兜底通道对"窗口内、身体外"是**保持当前状态**
     // （见 pointer-target.js），所以这里翻成可交互后不会被它翻回去。
     const overCard = this.alertCard ? this.alertCard.containsPoint(wx, wy) : false;
-    this.setInteractive(overBody || overCard);
+    this.setInteractive(inBody || overCard);
+    // 悬浮提示与可交互判定同源（同一个 inBody）：光标进身体 → 提示出现，离开 → 收起
+    this.setTip(inBody);
+    // 跟随光标：位置依赖光标，所以每次移动都得重摆一次（setTip 只在显隐变化时才渲染）
+    if (this.tipOn) this.renderTip();
   }
 
   onClick() {
@@ -1026,14 +1142,18 @@ class PetSprite {
     e.preventDefault();
     this.stopThrow(); // 菜单弹出前停住飞行中的宠物
     this.stopMove(); // 菜单悬停期间宠物不漫游
-    // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 对话 / 回到初始位置）+ 共享菜单树（动作→分类→具体动画）
+    // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 对话 / 回到初始位置 / 重载配置）+ 共享菜单树（动作→分类→具体动画）
     // 碎碎念/对话项无条件显示：手动触发不受 whisperEnabled 限制（该字段只影响自动周期轮询）
-    const tools = [{ label: '打开网站', action: 'open-site' }];
+    // 首项文案随宿主形态变（OPEN_TARGET）：宿主是 DSH 桌面应用时点是"唤起桌面应用窗口"，仍叫「打开网站」会误导
+    const tools = [{ label: OPEN_TARGET === 'desktop' ? '打开 DeepSeek Harness' : '打开网站', action: 'open-site' }];
     if (this.pet.balanceEnabled) tools.push({ label: '查看余额', action: 'show-balance' });
     tools.push(
       { label: '碎碎念', action: 'whisper' },
       { label: '对话', action: 'chat' },
       { label: '回到初始位置', action: 'home' },
+      // 改配置文件后免去回设置页点保存：请宿主重启桌面 Helper（全部桌面宠物窗口按最新配置重建）。
+      // 放在最后：它是"重新加载"这类维护动作，与上面几个宠物互动项语义不同。
+      { label: '重载配置', action: 'reload' },
     );
     const tree = tools.concat(S.buildMenuTree(this.animations));
     if (!tree.length) return;
@@ -1081,6 +1201,10 @@ class PetSprite {
       this.goHome(); // 停漫游/移动，清会话位置，回配置角落
       return;
     }
+    if (leaf.action === 'reload') {
+      this.reloadDesktop(); // 请宿主重启桌面 Helper：全部桌面宠物窗口按最新配置重建
+      return;
+    }
     if (!leaf.anim) return;
     // 文字类（noMirror）朝右站姿是镜像的：点播前强制朝左，避免文字镜像（与浏览器随机链"朝右不选文字"同语义）
     if (S.isNoMirrorAnimation(this.animations.categories, leaf.anim) && this.facing === 'right') {
@@ -1105,41 +1229,29 @@ class PetSprite {
     this.syncInputBusy(); // 菜单关：若没有别的占用（拖拽/弹窗）则交还常规判定
   }
 
-  // 「查看余额」菜单：立即拉取余额并展示（不需要等 1s 触发轮询；展示走 showBalanceNow 同一路径）
+  // 「查看余额」菜单：POST 动作让 host 刷新余额（写进 S），随即**立刻跑一拍 /state** 拿结果展示
+  // （0 延迟，不用等下一个 1s；展示走 showBalanceNow/showBalanceNotice 同一路径）。
+  // 注意这里不再直接拉余额：数据只有一个出口（S），菜单只负责"让它刷新"。
   showBalanceFromMenu() {
     if (!this.pet.balanceEnabled) return;
-    S.fetchBalanceState(BALANCE_URL)
-      .then((state) => {
-        balance = state;
-        window.__dshPetDebug.lastBalanceOk = state && state.ok === true;
-        if (state.ok) {
-          this.showBalanceNow(state);
-        } else {
-          // 菜单是显式请求：一律弹文字说明，不做「原因变化」去重——用户每次点都该有答复
-          this.showBalanceNotice(state);
-          if (state.reason !== 'unsupported') {
-            console.error(
-              '[dsh-pet] 菜单查看余额失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''),
-            );
-          }
-        }
+    S.postAction(BALANCE_URL)
+      .then((ok) => {
+        if (!ok) console.warn('[dsh-pet] 菜单查看余额：刷新动作未成功');
+        pollStateNow(); // 立即拉一拍：结果 0 延迟可见（失败也会由 /state 里的 ok:false 弹文字说明）
       })
       .catch((e) => {
         console.error('[dsh-pet] 菜单查看余额异常', e);
       });
   }
 
-  // 「碎碎念」菜单：立即让 host 强制新生成一句并展示（绕过节流缓存；
-  // /whisper/trigger 与周期端点同一逻辑但 force=true；失败显式告警，不伪造文案）
-  // 手动触发不受 whisperEnabled 限制——该字段只关自动周期轮询，手动永远可用。
+  // 「碎碎念」菜单：POST 动作让 host 立即新生成一句（写进 S），随即立刻跑一拍 /state 拿文本展示
+  // （0 延迟，不用等下一个 1s）。动作不回文本——文本只有一个出口（S）。
+  // 手动触发不受 whisperEnabled 限制——该字段只关自动周期，手动永远可用。
   showWhisperFromMenu() {
-    S.fetchWhisperTrigger(WHISPER_URL + '/trigger?pet=' + encodeURIComponent(this.pet.id))
-      .then((state) => {
-        if (state.ok) {
-          this.showWhisper(state.text, state.image);
-        } else {
-          console.warn('[dsh-pet] 菜单碎碎念失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
-        }
+    S.postAction(WHISPER_URL + '?pet=' + encodeURIComponent(this.pet.id))
+      .then((ok) => {
+        if (!ok) console.warn('[dsh-pet] 菜单碎碎念：生成动作未成功 pet=' + this.pet.id);
+        pollStateNow(); // 立即拉一拍：文本随这一拍到达并展示
       })
       .catch((e) => {
         console.warn('[dsh-pet] 菜单碎碎念异常', e);
@@ -1165,9 +1277,10 @@ class PetSprite {
       y: Math.max(4, this.hit.getBoundingClientRect().top + 6),
       // 弹窗同菜单：只允许在「窗口 ∩ 工作区」内显示，贴边时不被屏幕裁掉（#41）
       clamp: this.visibleClampRect(),
-      onReply: (reply, image) => {
-        console.info('[dsh-pet] 对话回复 pet=' + this.pet.id + '「' + reply + '」' + (image ? ' [' + image + ']' : ''));
-        this.showWhisper(reply, image); // 复用碎碎念链路：随机说话动画 + 气泡 10s（含配图）
+      onSent: () => {
+        // 发送成功：回复已写进 S，立刻跑一拍 /state 让气泡 0 延迟出现（不必等下一个 1s）
+        console.info('[dsh-pet] 对话已发送 pet=' + this.pet.id);
+        pollStateNow();
       },
       onClose: () => {
         this.chatClose = null;
@@ -1241,73 +1354,82 @@ class PetSprite {
     this.position();
   }
 
+  // 「重载配置」菜单：请宿主重启桌面 Helper —— 与设置页「保存」**同一条**重启路径
+  // （宿主 POST /reload → syncDesktop：串行队列 + 等旧进程真正退出再起新的）。
+  // 为什么不在渲染端就地重拉配置：① 每只宠物一个窗口是宿主按 DSH_PET_PETS 建的，
+  // 就地重拉改不了宠物数量/display/size；② 本页的余额/工作状态等全局轮询是一次性启动的
+  // （events.js 的 loopsStarted 门控），就地重建 sprite 会漏启新循环或留下旧定时器。
+  // 本请求由**即将被重启的这个进程**发出：响应可能永远不回（宿主杀进程时回调地址已失效），
+  // 故不 await、不重试，失败只记日志——重载本身就是把本进程换掉。
+  reloadDesktop() {
+    fetch(BASE + '/reload', { method: 'POST' }).catch((e) => {
+      console.warn('[dsh-pet] 重载配置请求失败（宿主不可达？）', e);
+    });
+  }
+
   renderBubble() {
-    // 气泡优先级：工作状态 > 碎碎念 > 余额（工作状态是 DSH 真实状态，最要紧；三者都关时隐藏）
+    // 气泡单槽：同一时刻只显示一个（优先级：终态任务 > 碎碎念/对话 > 余额 > 非终态任务）。
+    // 为什么终态任务不让位：完成/失败气泡只活 10s，被事件顶掉就彻底看不到了；非终态任务气泡
+    // 常驻（不设自动收起），让位 10s 零损失。与浏览器 src/client/pet.ts 的单槽优先级同一套。
     // 工作气泡与碎碎念同款弹窗样式：宽度自适应 + 自动换行（is-whisper：正常 white-space、宽随内容）
     // 配图标记交给 CSS：带图时取消 min-width（样式在 shared 的 MEME_BUBBLE_CSS，两端同一份）。
     // 图片 URL 与视频同规则：传 BASE 前缀（桌面是 file:// 页面，必须绝对地址）
-    const whisperImg = this.whisperOn ? S.createMemeImage(this.whisperImage, BASE) : null;
+    // 素材根同理（配图的归属与动画一致：pet/<素材根>-memes/ 独占 → 用户目录 → 包内）
+    const workOn = !!(this.workOn && this.workText);
+    const whisperOn = !!(this.whisperOn && this.whisperView);
+    const balanceOn = !!(this.bubbleOn && this.balanceView);
+    const workTerminal = this.workState === 'success' || this.workState === 'error';
+    const slot =
+      workTerminal && workOn ? 'work' : whisperOn ? 'whisper' : balanceOn ? 'balance' : workOn ? 'work' : 'none';
+    const whisperImg = slot === 'whisper' ? S.createMemeImage(this.whisperImage, BASE, this.assetRoot) : null;
     this.bubble.classList.toggle(
       'is-whisper',
       // 余额「文字说明」（不可用状态）同样要换行变体：默认 nowrap 会把长文案顶出宠物宽度
-      this.workOn || (this.whisperOn && !!this.whisperView) || (this.bubbleOn && this.balanceWrap),
+      slot === 'whisper' || slot === 'work' || (slot === 'balance' && this.balanceWrap),
     );
     this.bubble.classList.toggle(S.MEME_BUBBLE_CLASS, !!whisperImg);
-    if (this.workOn) {
-      // 工作状态气泡：workOn 期间占位（文本缺失时隐藏，绝不让更弱的碎碎念/余额气泡反超）
-      if (!this.workText) {
-        this.bubble.classList.remove('is-on');
-        window.__dshPetDebug.lastBubbleTitle = '';
-        return;
-      }
-      this.bubble.innerHTML = '';
+    if (slot === 'none') {
+      // 三者都没有可显示的内容：隐藏（不占位，也就不会挡住任何一层）
+      this.bubble.classList.remove('is-on');
+      window.__dshPetDebug.lastBubbleTitle = '';
+      return;
+    }
+    this.bubble.innerHTML = '';
+    if (slot === 'work') {
       const line = document.createElement('div');
       line.className = 'pet-bub-row';
       line.textContent = this.workText;
       this.bubble.appendChild(line);
-      this.bubble.classList.add('is-on');
-      window.__dshPetDebug.lastBubbleTitle = this.bubble.textContent.slice(0, 60);
-      return;
-    }
-    if (this.whisperOn && this.whisperView) {
-      this.bubble.innerHTML = '';
+    } else if (slot === 'whisper') {
       // 配图（shared 生成的 <img> + 共用样式）：先看图再读话，符合"配图"的阅读顺序
       if (whisperImg) this.bubble.appendChild(whisperImg);
       const line = document.createElement('div');
       line.className = 'pet-bub-row';
       line.textContent = this.whisperView[0]?.text ?? '';
       this.bubble.appendChild(line);
-      this.bubble.classList.add('is-on');
-      window.__dshPetDebug.lastBubbleTitle = this.bubble.textContent.slice(0, 60);
-      return;
-    }
-    if (!this.bubbleOn || !this.balanceView) {
-      this.bubble.classList.remove('is-on');
-      window.__dshPetDebug.lastBubbleTitle = '';
-      return;
-    }
-    this.bubble.innerHTML = '';
-    const rows = this.balanceView;
-    const hasTier = rows.some((r) => r.role === 'tier');
-    if (hasTier) {
-      // deepseek 余额单行：余额（峰/谷）¥x — 档位字着色
-      const line = document.createElement('div');
-      line.className = 'pet-bub-row';
-      for (const r of rows) {
-        const span = document.createElement('span');
-        if (r.role === 'tier') span.className = 'pet-bub-tier pet-bub-tier-' + r.tier;
-        span.textContent = r.text;
-        line.appendChild(span);
-      }
-      this.bubble.appendChild(line);
     } else {
-      for (const r of rows) {
-        const div = document.createElement('div');
-        if (r.role === 'error') div.className = 'pet-bub-err';
-        else if (r.role === 'sub') div.className = 'pet-bub-row pet-bub-sub';
-        else div.className = 'pet-bub-row';
-        div.textContent = r.text;
-        this.bubble.appendChild(div);
+      const rows = this.balanceView;
+      const hasTier = rows.some((r) => r.role === 'tier');
+      if (hasTier) {
+        // deepseek 余额单行：余额（峰/谷）¥x — 档位字着色
+        const line = document.createElement('div');
+        line.className = 'pet-bub-row';
+        for (const r of rows) {
+          const span = document.createElement('span');
+          if (r.role === 'tier') span.className = 'pet-bub-tier pet-bub-tier-' + r.tier;
+          span.textContent = r.text;
+          line.appendChild(span);
+        }
+        this.bubble.appendChild(line);
+      } else {
+        for (const r of rows) {
+          const div = document.createElement('div');
+          if (r.role === 'error') div.className = 'pet-bub-err';
+          else if (r.role === 'sub') div.className = 'pet-bub-row pet-bub-sub';
+          else div.className = 'pet-bub-row';
+          div.textContent = r.text;
+          this.bubble.appendChild(div);
+        }
       }
     }
     this.bubble.classList.add('is-on');

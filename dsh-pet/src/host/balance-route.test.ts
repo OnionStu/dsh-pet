@@ -85,10 +85,9 @@ describe('buildBalancePayload —— 自探测成功（当前默认路由 modlen
     assert.deepEqual(result, {
       ok: true,
       provider: 'modlens-moark',
-      family: 'moark',
-      kind: 'balance',
+      shape: 'money',
       source: 'probe',
-      data: { currency: 'CNY', total: '1200.00', baseline: '4000.00' },
+      data: { currency: 'CNY', total: '1200.00', fullBalance: '4000.00' },
       usage: { tokens: 5120, calls: 7, source: 'dsh-usage' },
     });
   });
@@ -97,7 +96,7 @@ describe('buildBalancePayload —— 自探测成功（当前默认路由 modlen
     stubFetch({ 'https://moark.com/api/base/oschina/member/quota': MOARK_CONSOLE_BODY });
     const result = await buildBalancePayload(input({ localUsage: { tokens: 6200, calls: 1 } }));
     assert.equal(result.ok, true);
-    assert.deepEqual(result.ok && result.kind === 'balance' ? result.usage : undefined, {
+    assert.deepEqual(result.ok && result.shape === 'money' ? result.usage : undefined, {
       tokens: 6200,
       calls: 1,
       source: 'local',
@@ -129,7 +128,7 @@ describe('buildBalancePayload —— 自探测成功（当前默认路由 modlen
       }),
     );
     assert.equal(result.ok, true);
-    assert.equal(result.ok && result.kind, 'opencode');
+    assert.equal(result.ok && result.shape, 'windows');
     assert.equal(result.ok && 'usage' in result, false);
   });
 });
@@ -144,8 +143,7 @@ describe('buildBalancePayload —— 余额兜底与显式失败', () => {
     assert.deepEqual(result, {
       ok: true,
       provider: 'openrouter',
-      family: 'openrouter',
-      kind: 'balance',
+      shape: 'money',
       source: 'dsh-usage',
       data: { currency: 'USD', total: '7.50' },
     });
@@ -153,8 +151,8 @@ describe('buildBalancePayload —— 余额兜底与显式失败', () => {
 
   test('自探测 unsupported + overview 也没有该 family → 保持 unsupported（不编数字）', async () => {
     stubFetch({ 'http://127.0.0.1:3080/api/dsh-usage/overview': overviewToday('2026-09-18') });
-    const result = await buildBalancePayload(input({ provider: 'commandcode' }));
-    assert.deepEqual(result, { ok: false, provider: 'commandcode', family: 'commandcode', reason: 'unsupported' });
+    const result = await buildBalancePayload(input({ provider: 'not-a-real-route' }));
+    assert.deepEqual(result, { ok: false, provider: 'not-a-real-route', reason: 'unsupported' });
   });
 
   test('缺凭证 → credential-missing（不拿快照顶替：那是显式配置问题，要报出来）', async () => {

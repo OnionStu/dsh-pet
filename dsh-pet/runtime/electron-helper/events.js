@@ -9,7 +9,8 @@
 // ---- 工作状态联动（DSH 会话状态，每只宠物按 workStatusEnabled 门控；容器 1s 轮询，ts 变化才递增 tick）----
 // 气泡驻留语义与浏览器一致：thinking/working/result/waiting（"事情还没完"）常驻直到状态切走；
 //   success/error（"这事结束了"）10s 自动收起；state=null（空闲/回合被打断）收起气泡回待机。
-// 动画循环语义：进行中档位循环播（switchTo once=false），终态档位播一遍回 idle 链。
+// 动画循环语义：进行中档位循环播（switchTo once=false），终态档位播一遍回 idle 链；
+//   回空闲时把正在循环的那段改成"播完即停"（见下面空闲分支），否则 ended 永不触发、链回不去。
 PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick) {
   if (!this.pet.workStatusEnabled) return; // 未启用工作状态联动 -> 该宠物完全免疫（与浏览器一致）
   if (tick === 0 || tick === this.prevWorkTick) return;
@@ -19,7 +20,19 @@ PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick) {
   const stateChanged = this.prevWorkState !== state;
   this.prevWorkState = state;
   if (!state) {
-    // 空闲：收起常驻气泡（动画不处理，由常规动画链回待机）
+    // 回空闲：把正在**循环播**的进行中档位动画改成"播完即停"（与浏览器 src/client/pet.ts 的空闲分支
+    // 同一处修复）。进行中档位走 switchTo(name, false)（el.loop=true、el.onended=null），ended 永不
+    // 触发；而这里不切动画（原设计"由常规动画链回待机"），链因此拿不到推进信号 —— 宠物会一直卡在
+    // 那段工作动画上。只把当前段改成播完即停：它结束后走 handleEnded → resumeWorkStatusAnim() 返回
+    // false → playIdle；工作期间的原生 loop 不受影响。
+    if (S.poolIncludes(this.animations.events?.workStatus ?? [], this.anim)) {
+      const frontEl = this.front === 0 ? this.videoA : this.videoB;
+      if (frontEl) {
+        frontEl.loop = false;
+        frontEl.onended = () => this.handleEnded();
+      }
+    }
+    // 空闲：收起常驻气泡
     if (this.workTimer !== null) window.clearTimeout(this.workTimer);
     this.workTimer = null;
     this.workOn = false;
@@ -109,76 +122,10 @@ PetSprite.prototype.showBalanceNotice = function showBalanceNotice(state) {
   }, BUBBLE_DURATION_MS);
 };
 
-// ---- 碎碎念（每只宠物独立：按 eventsRefreshSec.whisper 周期轮询自己的句子，用本种类人设生成） ----
-PetSprite.prototype.startWhisperLoop = function startWhisperLoop() {
-  if (!this.pet.whisperEnabled || this.whisperLoopTimer !== null) return;
-  const intervalMs = Math.max(1000, (this.pet.eventsRefreshSec?.whisper ?? 3600) * 1000);
-  const refresh = async () => {
-    try {
-      const petId = encodeURIComponent(this.pet.id);
-      const state = await S.fetchWhisperState(WHISPER_URL + '?pet=' + petId);
-      if (!this.whisperBaseline) {
-        this.whisperBaseline = true; // 首次仅记基线：避免启动/刷新时重放历史事件
-        if (state.ok) {
-          this.prevWhisperTs = state.ts;
-          this.whisperText = state.text;
-        }
-        return;
-      }
-      if (!state.ok) {
-        console.warn(
-          '[dsh-pet] 碎碎念生成失败 pet=' +
-            this.pet.id +
-            ' reason=' +
-            state.reason +
-            (state.message ? ' ' + state.message : ''),
-        );
-        return;
-      }
-      if (state.ts !== this.prevWhisperTs) {
-        this.prevWhisperTs = state.ts;
-        this.whisperText = state.text;
-        this.showWhisper(state.text, state.image);
-      }
-    } catch (e) {
-      console.warn('[dsh-pet] 碎碎念拉取异常 pet=' + this.pet.id, e);
-    }
-  };
-  this.whisperLoopTimer = window.setInterval(() => void refresh(), intervalMs);
-  void refresh();
-};
-
-// 命令触发气泡（/chat 斜杠命令）：1s 轻量轮询 /broadcast?pet=<id>，ts 变化即弹气泡。
-// 与碎碎念周期轮询独立（host 广播缓存是另一条通道）：手动触发语义不受 whisperEnabled 门控
-PetSprite.prototype.startBroadcastLoop = function startBroadcastLoop() {
-  if (this.broadcastLoopTimer !== null) return;
-  const refresh = async () => {
-    try {
-      const petId = encodeURIComponent(this.pet.id);
-      const res = await fetch(BASE + '/broadcast' + '?pet=' + petId, { cache: 'no-store' });
-      if (!res.ok) return;
-      const d = (await res.json().catch(() => null)) || {};
-      const ts = typeof d.ts === 'number' ? d.ts : 0;
-      if (!this.broadcastBaseline) {
-        // 首拉无条件记基线（含 ts=0）：若 ts=0 提前 return 会跳过基线建立，
-        // 导致第一条命令广播被当成基线吃掉（该条永不弹）
-        this.broadcastBaseline = true;
-        this.prevBroadcastTs = ts;
-        return;
-      }
-      if (ts === 0 || ts === this.prevBroadcastTs) return; // 无广播 / 无变化
-      this.prevBroadcastTs = ts;
-      if (typeof d.text === 'string' && d.text) {
-        // image：host 侧抽定/模型选定的配图名（未开配图则 undefined）——与 /whisper 同契约
-        this.showWhisper(d.text, typeof d.image === 'string' ? d.image : '');
-      }
-    } catch (e) {
-      console.warn('[dsh-pet] 广播拉取异常 pet=' + this.pet.id, e);
-    }
-  };
-  this.broadcastLoopTimer = window.setInterval(() => void refresh(), 1000);
-  void refresh();
-};
+// ---- 碎碎念 / 命令气泡 / 对话回复（**三合一**）：不再各自轮询 ----
+// 改造前这里是两个循环（startWhisperLoop 按 eventsRefreshSec.whisper 轮询 /whisper、
+// startBroadcastLoop 1s 轮询 /broadcast）。现在三者都写进 S 的 pets.<id>.say，由上面的
+// /state 统一轮询分发到对应宠物（见 applySayLeaf）——本窗口只装一只宠物，按 id 命中即可。
 
 // 碎碎念展示（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（10s 消失，与余额同一语义）
 // image：host 随机抽定的配图名称（未开配图/池为空则空串，与浏览器端同一契约）
@@ -264,45 +211,103 @@ function applyBalanceNotice(state, explicit) {
   }
 }
 
+// ---------- 统一轮询（GET /state，1s）：与浏览器同一份数据来源与渲染入口 ----------
+// 每个叶子 = { counter, data }：首拉只记基线（不渲染），之后 counter 变了才渲染。
+// 各功能逐个接入，旧的独立轮询循环随迁随删。
+let stateBaseline = null;
+
+/** 余额叶子 → 展示（成功播档位动画 + 气泡；不可用按 shared 判定弹文字说明） */
+function applyBalanceLeaf(leaf) {
+  const hit = S.readBalance(leaf);
+  if (!hit) return;
+  balance = hit.state;
+  window.__dshPetDebug.lastBalanceOk = hit.state && hit.state.ok === true;
+  if (hit.state.ok) {
+    balanceTick++;
+    for (const s of sprites) s.onBalanceTick(hit.state, balanceTick);
+  } else {
+    // 不可用：manual（用户主动要的）一律弹，周期刷新只在原因变化时弹一次
+    applyBalanceNotice(hit.state, hit.manual);
+  }
+}
+
+/** 说话叶子 → 对应宠物播说话动画 + 气泡（碎碎念/命令气泡/对话回复三合一）。
+ *  petId 由路径解析出来（pets.<id>.say）；本窗口只装一只宠物，按 id 命中即可。 */
+function applySayLeaf(petId, leaf) {
+  const said = S.readSay(leaf);
+  if (!said) return;
+  for (const s of sprites) {
+    if (s.pet.id === petId) s.showWhisper(said.text, said.image);
+  }
+}
+
+/** 工作状态叶子 → 各宠物切档位动画 + 气泡（含回到空闲：state=null 用于收起常驻气泡） */
+function applyWorkStatusLeaf(leaf) {
+  const snap = S.toWorkStatus(leaf.data);
+  if (!snap) return;
+  workTick++;
+  for (const s of sprites) s.onWorkTick(snap, workTick);
+}
+
+/** 点播动画叶子 → 对应宠物播该动画（其他插件经 POST /anim 写进 S）。
+ *  复用**右键菜单同一个处理函数** onMenuAction，所以镜像修正 / 移动类走真实位移 /
+ *  其余播一遍的语义与菜单点一下完全一致，这里不重写一遍。
+ *  petId 由路径解析出来（pets.<id>.anim）；本窗口只装一只宠物，按 id 命中即可。 */
+function applyAnimLeaf(petId, leaf) {
+  const hit = S.readAnim(leaf);
+  if (!hit) return;
+  for (const s of sprites) {
+    if (s.pet.id === petId) s.onMenuAction({ label: hit.name, anim: hit.name });
+  }
+}
+
+/** 跑一拍 /state（1s 定时与「前端动作后立刻刷新」共用同一份实现） */
+async function pollStateOnce() {
+  try {
+    const s = await S.fetchState(STATE_URL);
+    if (!s) return;
+    if (stateBaseline === null) {
+      stateBaseline = S.flattenCounters(s); // 首拉：只记基线，不渲染（避免启动/重载时重放旧气泡）
+      return;
+    }
+    for (const change of S.takeChanged(s, stateBaseline)) {
+      if (change.leaf.data === null) continue;
+      if (change.path === 'sections.balance') applyBalanceLeaf(change.leaf);
+      else if (change.path === 'sections.workStatus') applyWorkStatusLeaf(change.leaf);
+      else if (change.path.startsWith('pets.') && change.path.endsWith('.say')) {
+        // 宠物 id **允许含点号**：按前缀/后缀切片，绝不 split('.')
+        applySayLeaf(change.path.slice('pets.'.length, -'.say'.length), change.leaf);
+      } else if (change.path.startsWith('pets.') && change.path.endsWith('.anim')) {
+        // 点播动画：同样按前缀/后缀切片（counter 每次写入都递增，连点两次也会分发两次）
+        applyAnimLeaf(change.path.slice('pets.'.length, -'.anim'.length), change.leaf);
+      }
+    }
+  } catch {
+    /* 轻量轮询失败静默：下一拍再试 */
+  }
+}
+
+/** 立即跑一拍：右键菜单等**前端动作**完成后调用——结果 0 延迟可见，不用等下一个 1s */
+function pollStateNow() {
+  void pollStateOnce();
+}
+
 function startLoops() {
   if (loopsStarted) return;
   loopsStarted = true;
 
-  // 是否存在启用余额功能的宠物：全禁用时跳过余额轮询（不拉取，避免无意义的周期请求——与浏览器一致）
-  const anyBalanceEnabled = sprites.some((s) => s.pet.balanceEnabled);
-
-  // 余额周期轮询：eventsRefreshSec.balance（秒），成功递增 balanceTick 触发事件动画
-  if (anyBalanceEnabled) {
-    const intervalMs = Math.max(1000, (config.refreshSec?.balance ?? 1800) * 1000);
-    const balanceLoop = async () => {
-      try {
-        const state = await S.fetchBalanceState(BALANCE_URL);
-        balance = state;
-        window.__dshPetDebug.lastBalanceOk = state && state.ok === true;
-        if (state.ok) {
-          balanceTick++;
-          for (const s of sprites) s.onBalanceTick(state, balanceTick);
-        } else {
-          // 不可用：按 shared 的判定决定是否弹文字说明（自动轮询仅在原因变化时弹一次）
-          applyBalanceNotice(state, false);
-        }
-      } catch (e) {
-        console.error('[dsh-pet] 余额拉取异常', e);
-      }
-      setTimeout(() => void balanceLoop(), intervalMs);
-    };
-    void balanceLoop();
-  }
-
-  // 碎碎念：每只启用宠物独立轮询（startWhisperLoop）——各自周期、各自人设、各自一句话（与浏览器一致）
-  for (const s of sprites) s.startWhisperLoop();
-  // 命令触发气泡：每只宠物独立 1s 轻轮询（startBroadcastLoop）——/chat 命令写入即展示
-  for (const s of sprites) s.startBroadcastLoop();
+  // 统一轮询：1s 一拍（余额数据由 host 定时器刷新后写进 S，这里只读）
+  const stateLoop = async () => {
+    await pollStateOnce();
+    setTimeout(() => void stateLoop(), 1000);
+  };
+  void stateLoop();
 
   // 提醒卡（审批/选择/计划评审/重启提醒）：容器级 1s 轮询 /alerts，**只在主宠物窗口**渲染
   // （与浏览器浮层同语义：那边也是只读主宠物 .dsh-pet-root 的 rect）。行集合变化才重渲染。
-  // 桌面专属能力：浏览器有自己的一套（client/approvals.ts，数据源是网页 ctx 的 pendingInteractions），
-  // 桌面拿不到那份状态，只能由 host 从 DSH 事件表推导后经 /alerts 提供（见 src/host/pending-alerts.ts）。
+  // 这是桌面半侧独有的能力：浏览器那边有自己的审批浮层（数据源是网页 ctx 的 pendingInteractions），
+  // 桌面宠物是另一个进程的透明窗，拿不到那份状态，只能由 host 从 DSH 事件表推导后经 /alerts 提供
+  // （见 src/host/pending-alerts.ts）。它不进 S：/state 是两端共用的叶子，而这条只有桌面消费。
   {
     const card = sprites.find((s) => s.alertCard);
     if (card) {
@@ -321,59 +326,5 @@ function startLoops() {
       };
       void alertsLoop();
     }
-  }
-
-  // 手动 /balance 触发：1s 轻量轮询触发计数（端点已禁止缓存），计数变化且余额启用时立即刷新余额并递增 tick
-  let triggerBaseline = null;
-  const triggerLoop = async () => {
-    try {
-      const count = await S.fetchTriggerCount(TRIGGER_URL);
-      if (count < 0) return;
-      if (triggerBaseline === null) {
-        triggerBaseline = count; // 首次仅记基线：避免启动时重放历史触发
-      } else if (count !== triggerBaseline) {
-        triggerBaseline = count;
-        if (anyBalanceEnabled) {
-          const state = await S.fetchBalanceState(BALANCE_URL);
-          balance = state;
-          if (state.ok) {
-            balanceTick++;
-            for (const s of sprites) s.onBalanceTick(state, balanceTick);
-          } else {
-            // 手动 /balance：显式请求，不可用也必弹文字说明
-            applyBalanceNotice(state, true);
-          }
-        }
-      }
-    } catch {
-      /* 轻量轮询失败静默：下一周期再试 */
-    }
-    setTimeout(() => void triggerLoop(), 1000);
-  };
-  if (anyBalanceEnabled) void triggerLoop();
-
-  // 工作状态联动：任一宠物启用才轮询 /work-status（1s；避免无意义的周期请求——与浏览器一致）。
-  // ts 变化（含回到空闲：host 在状态变化时更新 ts，切走 = 新 ts，用于收起常驻气泡）才递增 workTick →
-  // 各启用宠物播档位动画+气泡；首拉仅记基线，启动/刷新不重放历史状态。
-  const anyWorkStatusEnabled = sprites.some((s) => s.pet.workStatusEnabled);
-  if (anyWorkStatusEnabled) {
-    let workBaseline = null;
-    const workLoop = async () => {
-      try {
-        const snap = await S.fetchWorkStatus(WORK_STATUS_URL);
-        const ts = snap && typeof snap.ts === 'number' ? snap.ts : 0;
-        if (workBaseline === null) {
-          workBaseline = ts; // 首拉仅记基线
-        } else if (ts !== workBaseline) {
-          workBaseline = ts;
-          workTick++;
-          for (const s of sprites) s.onWorkTick(snap, workTick);
-        }
-      } catch {
-        /* 轻量轮询失败静默：下一周期再试 */
-      }
-      setTimeout(() => void workLoop(), 1000);
-    };
-    void workLoop();
   }
 }

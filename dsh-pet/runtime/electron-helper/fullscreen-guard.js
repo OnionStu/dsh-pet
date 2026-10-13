@@ -348,6 +348,16 @@ function createFullscreenGuard(options = {}) {
   };
 }
 
+/**
+ * 全屏让位在本平台是否可用：**仅 macOS**。
+ *
+ * 平台例外与判定规则一样住在本模块（main.js 只接线）：本模块有单测，判断写在那边等于绕过测试。
+ * Windows / Linux 没有对应的探测实现（fullscreen-probe.jxa 是 osascript 脚本）。
+ */
+function fullscreenGuardSupported() {
+  return process.platform === 'darwin';
+}
+
 module.exports = {
   COVER_TOLERANCE,
   MENU_BAR_MAX_HEIGHT,
@@ -359,4 +369,5 @@ module.exports = {
   menuBarVisible,
   parseProbeOutput,
   createFullscreenGuard,
+  fullscreenGuardSupported,
 };

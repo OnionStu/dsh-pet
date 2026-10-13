@@ -1,23 +1,23 @@
-// 系统通知引擎（client 半侧，浏览器专属）：轮询 host 通知帧队列，按「聚焦不弹」规则
+// 系统通知引擎（client 半侧，浏览器专属）：消费 host 的通知帧，按「聚焦不弹」规则
 // 发出系统级 toast（Web Notification API，Windows 为右下角原生通知）。
 // 这是**独立于宠物**的能力（监测 DSH 事件 → 弹 toast），天然只随 DSH 网页端走；
 // 桌面模式是宠物本体，不做宠物无关的功能——「两端一致」只约束宠物行为。
 // 行为（帧 → 文案）来自 src/shared/notify.ts（单一来源）。
 // 单一总开关：读成品配置（GET /dsh-pet-7340/config）main 条目的 notificationsEnabled；纯副作用模块，
-// 无 react 依赖，由 app.ts 装配层启动。
+// 无 react 依赖，由 app.ts 装配层初始化。
 //
 // 事件路径（与 0.1.1 版的差异）：旧实现经浏览器 connection 事件流（api.events.mux / events.host）
 // 订阅 DSH 事件；DSH 0.1.5 已删除这两个 API。现改为 host 侧监听 DSH 宿主事件
 // （session/event 的 turn/end、approval/asked、tool/call-ask_user_question + agent/error），
-// 生成与 shared/notify.ts 同契约的帧入队，本引擎 1s 轮询 /dsh-pet-7340/notify 增量拉取——
-// 与 work-status/broadcast 轮询同族，帧→文案映射零改动。
+// 生成与 shared/notify.ts 同契约的帧**写进 S 的 sections.notify**；本引擎不再自己轮询——
+// 容器的统一 /state 轮询发现 counter 变化后调 notifyFromFrame（帧→文案映射零改动）。
 // 触发清单（与 DSH 事件契约一一对应，见 shared/notify.ts）：
 //   - 对话完成 / 生成失败 / 输出截断（turn/end reason.kind）
 //   - 生成失败（agent/error，无回合位置）
 //   - 权限申请（approval/asked）
 //   - 用户选择（tool/call ask_user_question）
-// 过滤：aborted / interrupted 不弹（host 侧 reduceNotifyFrame 已滤）；重连不重放历史帧
-//（首拉记基线 seq，与 broadcast/work-status 首次记基线同语义）。
+// 过滤：aborted / interrupted 不弹（host 侧 reduceNotifyFrame 已滤）；重连/刷新不重放历史
+//（首拉记基线 counter，与其余叶子同一套语义）。
 
 import { frameToToast, truncate, NOTIFY_ICONS as ICON_NAMES, type NotifyFrame } from '../shared/notify';
 import { handBackCenterColumn } from './hand-back';
@@ -52,20 +52,23 @@ function isPageActive(): boolean {
   return pageVisible && pageFocused;
 }
 
-// ---------- 跨会话归属：ctx 由 startNotify 注入（模块级单实例；settings 的测试通知不经此路径） ----------
-/** 插件 ctx 的窄接口（sessions 列表读当前会话 / open 跳转；app.ts 里 ctx 本身是 any，这里只描述用到的面） */
-interface NotifyCtx {
-  sessions?: {
-    list?: { getSnapshot?: () => { current?: string } };
-    open?: (sessionId: string) => void;
-  };
+// ---------- 跨会话归属：ctx 由 initNotify 注入（模块级单实例；设置页的测试通知不经此路径） ----------
+/**
+ * 跨会话归属需要的两个注入物（窄接口，app.ts 里 ctx 本身是 any，这里只描述用到的面）：
+ * - `list`：会话列表快照（读「当前会话」，据此判断帧是不是别的会话的）；
+ * - `open`：切会话入口。0.2 是 `uiWorkspace.openSession`（0.1 的 `sessions.open` 已移除），
+ *   由装配层用闭包包住——Cordis 注入的是类方法，脱离服务实例调用时 this 为 undefined，必抛。
+ */
+export interface NotifyContextLike {
+  list?: { getSnapshot?: () => unknown };
+  open?: (sessionId: string) => void;
 }
-let uiCtx: NotifyCtx | null = null;
+let uiCtx: NotifyContextLike | null = null;
 
 /** 帧所属会话是否为「非当前会话」（无归属 / 归属=当前会话 → false） */
 function isForeignSession(sessionId?: string): boolean {
   if (typeof sessionId !== 'string' || sessionId === '') return false;
-  const current = uiCtx?.sessions?.list?.getSnapshot?.().current;
+  const current = (uiCtx?.list?.getSnapshot?.() as { current?: string } | undefined)?.current;
   return typeof current === 'string' && sessionId !== current;
 }
 
@@ -104,9 +107,9 @@ function toast(title: string, body?: string, icon?: string, sessionId?: string):
     // 点击通知：跳到帧所属会话（若有）→ 聚焦回 DSH 页面并关闭该通知（图标加载失败只降级为无图标，绝不关闭弹窗）
     const n = new Notification(title, opts);
     n.onclick = () => {
-      if (foreign && sessionId && typeof uiCtx?.sessions?.open === 'function') {
+      if (foreign && sessionId && typeof uiCtx?.open === 'function') {
         try {
-          uiCtx.sessions.open(sessionId);
+          uiCtx.open(sessionId);
           // 与宠物切换卡同语义：跳会话后让打开的插件页让位，回到对话区（见 hand-back.ts）
           handBackCenterColumn();
         } catch {
@@ -170,65 +173,32 @@ export async function reloadNotifications(): Promise<void> {
   notifyEnabled = await readNotificationsEnabled();
 }
 
-// ---------- host 通知帧轮询：1s 轻量拉取增量帧（与 work-status/broadcast 同族） ----------
+// ---------- 通知帧的消费：由容器的 /state 轮询分发（本模块不再自己轮询） ----------
 
-/** 拉一轮 /notify（since=已消费 seq）；失败返回 null（静默，下轮再试）。 */
-async function fetchNotify(seq: number): Promise<{ seq: number; frames: NotifyFrame[] } | null> {
-  try {
-    const r = await fetch('/dsh-pet-7340/notify?since=' + seq);
-    if (!r.ok) return null;
-    const d = (await r.json().catch(() => null)) as { seq?: unknown; frames?: unknown } | null;
-    if (typeof d?.seq !== 'number') return null;
-    return { seq: d.seq, frames: Array.isArray(d.frames) ? (d.frames as NotifyFrame[]) : [] };
-  } catch {
-    return null; // 轻量轮询失败静默：下一周期再试
-  }
-}
-
-/** 等一拍（1s），支持中途取消 */
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = window.setTimeout(resolve, ms);
-    signal.addEventListener(
-      'abort',
-      () => {
-        window.clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
+/**
+ * 一帧通知 → toast（帧映射来自 shared；未知帧静默跳过）。
+ * 由容器统一轮询 /state 后、发现 sections.notify 的 counter 变化时调用——
+ * 通知不再有独立的 1s 轮询循环（改造前是 /notify?since=<seq> 拉增量帧数组）。
+ */
+export function notifyFromFrame(frame: unknown): void {
+  toastFrame(frame as NotifyFrame);
 }
 
 /**
- * 启动系统通知引擎。常驻（开关在触发时按实时值判断，不用重启）；
- * 总开关开启且权限未决定时兜底申请一次权限。
- * ctx：注入跨会话归属能力（读当前会话 / 点击跳转）——帧带 sessionId 且不属于当前会话时，
- * 即使页面聚焦也弹 toast（这是跨会话审批提醒的核心场景）。
- * 1s 轮询 /dsh-pet-7340/notify 拉增量帧：首拉只记基线 seq 不弹历史（页面加载不重放旧通知），
- * 之后每次递增拉新帧并逐条 toast；轮询失败静默，下轮重试；信号中止即退出。
+ * 初始化系统通知引擎（**不做轮询**）：读总开关 + 兜底申请权限 + 跟踪页面聚焦。
+ * 帧的消费改为容器统一轮询 /state 后调 notifyFromFrame（见 pet.ts 的分发）。
+ * 返回释放函数（摘掉聚焦监听），由 ctx.effect 在插件卸载时调用。
+ * @param context 跨会话归属（会话列表快照 + 切会话闭包）；缺省 = 退回「聚焦一刀切」的旧行为
  */
-export async function startNotify(ctx: unknown, signal: AbortSignal): Promise<void> {
-  uiCtx = (ctx ?? null) as NotifyCtx | null;
-  notifyEnabled = await readNotificationsEnabled();
-  if (typeof Notification !== 'undefined' && notifyEnabled && Notification.permission === 'default') {
-    void requestNotificationPermission(); // 兜底申请（无手势时浏览器可能压制；真正的申请在设置页开关/按钮点击处）
-  }
-  const disposeFocus = initFocusTracking();
-  let seq = 0;
-  try {
-    // 首拉：只记基线 seq，不弹历史帧
-    const baseline = await fetchNotify(0);
-    if (baseline) seq = baseline.seq;
-    while (!signal.aborted) {
-      await sleep(1000, signal);
-      if (signal.aborted) break;
-      const batch = await fetchNotify(seq);
-      if (!batch || batch.seq <= seq) continue; // 无新帧：保持基线继续等
-      for (const frame of batch.frames) toastFrame(frame);
-      seq = batch.seq;
+export function initNotify(context?: NotifyContextLike): () => void {
+  uiCtx = context ?? null;
+  // 总开关读成品配置（拉取失败不阻塞，默认开启）；之后由设置页保存后 reloadNotifications 重读
+  void readNotificationsEnabled().then((enabled) => {
+    notifyEnabled = enabled;
+    if (typeof Notification !== 'undefined' && enabled && Notification.permission === 'default') {
+      // 兜底申请（无手势时浏览器可能压制；真正的申请在设置页开关/按钮点击处）
+      void requestNotificationPermission();
     }
-  } finally {
-    disposeFocus();
-  }
+  });
+  return initFocusTracking();
 }

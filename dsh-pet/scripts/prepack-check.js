@@ -77,6 +77,9 @@ const required = [
   'runtime/electron-helper/pointer-target.js', // 桌面模式点击穿透兜底判定（main.js require，缺了会启动即崩）
   'runtime/electron-helper/fullscreen-guard.js', // 桌面模式全屏让位判定（main.js require，缺了同样启动即崩）
   'runtime/electron-helper/fullscreen-probe.jxa', // 桌面模式全屏探测（JXA，由 osascript 拉起；缺了该功能静默失效）
+  'runtime/electron-helper/host-liveness.js', // 桌面模式宿主存活判定（main.js require，缺了会启动即崩）
+  'runtime/electron-helper/topmost-watchdog.js', // 桌面模式置顶看门狗判定（main.js require，缺了会启动即崩）
+  'runtime/electron-helper/dpi-linearization.js', // 桌面模式 DPI 线性化判定与换算（main.js require，缺了会启动即崩）
   'runtime/electron-helper/preload.js', // 桌面模式 preload 桥
   'runtime/electron-helper/renderer.js', // 桌面模式渲染端（宠物本体）
   'runtime/electron-helper/shared-core.js', // 桌面模式共享纯逻辑（src/shared 构建产物，window.PetShared）
@@ -163,6 +166,24 @@ walk(ROOT);
 const mb = (total / 1e6).toFixed(1);
 if (total > 200e6) fail(`package too large: ${mb}MB (limit 200MB)`);
 else ok(`package size ${mb}MB`);
+
+// ---- 8. 构建产物不得引入未声明的外部 helper（@oxc-project/runtime） ----
+// rolldown 在 target es2020 下会为「带初始化器的类字段」这类降级语法产出
+// `import _defineProperty from "@oxc-project/runtime/helpers/defineProperty"`；而该包既不在本包
+// dependencies 里、也不随包发布（宿主 DSH 的安装树里同样没有）→ DSH 加载插件树时直接
+// ERR_MODULE_NOT_FOUND，整个 profile 起不来（issue #59 改动踩过一次，见 src/host/helper-process.ts
+// 的约定：类字段一律 `declare` + 构造器赋值，避免降级出外部 helper）。
+const OXC_RUNTIME = '@oxc-project/runtime';
+const oxcBundles = ['lib/index.js', 'lib/client.js'].filter((f) => {
+  const p = join(ROOT, f);
+  return existsSync(p) && readFileSync(p, 'utf8').includes(OXC_RUNTIME);
+});
+if (oxcBundles.length > 0)
+  fail(
+    `bundle imports undeclared helper ${OXC_RUNTIME} (${oxcBundles.join(', ')}) — ` +
+      '类字段改用 declare + 构造器赋值（见 src/host/helper-process.ts 的约定）',
+  );
+else ok(`no undeclared ${OXC_RUNTIME} import in bundles`);
 
 // ---- 汇总 ----
 if (process.exitCode) console.error('\n[prepack-check] fix the failures above before publishing.');

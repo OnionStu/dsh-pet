@@ -12,10 +12,16 @@
  * 口径钉子：tokens = input + cacheRead + cacheWrite + output（**不含 reasoning**），
  * 与 dsh-usage 台账的 `totalTokens` 逐字一致——两个来源的数字必须能互相核对，不能各算各的。
  */
-import { normalizeProviderRoute, type UsageTotals } from './balance';
+import { normalizeProviderRoute } from './balance/index';
 
-/** 用量事实（本机折叠 / 远端台账同一口径）：定义在 balance.ts（HTTP 契约层），此处再导出方便用量侧引用 */
-export type { UsageTotals };
+/**
+ * 用量事实（本机折叠 / 远端台账同一口径）。
+ * 定义在这里（用量侧）而不是余额模块：余额与用量是两条口径，余额协议换形状不该牵动用量。
+ */
+export interface UsageTotals {
+  tokens: number;
+  calls: number;
+}
 
 /** 单次调用的 token 用量（DSH `assistant/message` 事件 `data.usage` 的子集） */
 export interface TokenUsageLike {
