@@ -5,6 +5,8 @@ import { makePetUI } from './pet';
 import { makePetConfigSection, NS, zh, en, petBridge } from './settings';
 import { startNotify } from './notify';
 import { startApprovalAlerts } from './approvals';
+import { startSessionDeepLink, type SessionListLike } from './session-deeplink';
+import { SESSION_DEEPLINK_PARAM, sessionDeepLink } from '../shared/alerts';
 import type * as ReactNS from 'react';
 
 /**
@@ -26,9 +28,10 @@ export function makeFactory(): (require: (mod: string) => any) => any {
     const name = 'pet';
     // commandUi 写成服务依赖（与官方 client-ui-permission-presets 的写法一致）：
     // 让 cordis 等「/」命令入口服务就绪后才 apply 本插件，保证 /pet 装饰必然注册成功。
-    // uiSession/sessions：跨会话审批提醒的数据源（pendingInteractions + 会话列表/跳转），
-    // 声明为服务依赖保证 apply 时两个服务已就绪。
-    const inject = ['slots', 'locale', 'connection', 'remote', 'remote.commands', 'commandUi', 'uiSession', 'sessions'];
+    // uiSession/sessions：跨会话提醒的数据源（当前会话过滤、会话列表）与会话切换列表；
+    // uiWorkspace.openSession：0.2 的切会话入口（原 ctx.sessions.open 已移除）。
+    // 声明为服务依赖保证 apply 时三个服务已就绪。
+    const inject = ['slots', 'locale', 'connection', 'remote', 'remote.commands', 'commandUi', 'uiSession', 'sessions', 'uiWorkspace'];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- DSH 注入的 ctx（locale/slots/webServer 等 service 无静态类型）
     function apply(ctx: any) {
       // 本地化字典（设置页文案）
@@ -46,14 +49,38 @@ export function makeFactory(): (require: (mod: string) => any) => any {
       }, 'dsh-pet: notifications');
 
       // 跨会话提醒浮层（宠物头顶卡片 + 标签页 [N 待处理] 角标），两路数据源：
-      //   ① 审批/选择题：订阅 uiSession.pendingInteractions + sessions.list（纯 client 数据源）；
+      //   ① 审批/选择题：轮询 host /alerts（0.2 移除了 uiSession.pendingInteractions 读面）；
       //   ② 重启提醒：轮询 host /restart-notice（agent 调 notify_restart_required 工具写入）。
-      // uiSession/sessions 已声明为服务依赖；两路各自降级，缺一路不影响另一路。
+      // 两路各自降级，缺一路不影响另一路。
       ctx.effect(() => {
         const ac = new AbortController();
         startApprovalAlerts(ctx, ac.signal);
         return () => ac.abort();
       }, 'dsh-pet: cross-session alerts');
+
+      // 桌面提醒卡的「点一行跳会话」深链：桌面端（Electron 透明窗）没有切会话的客户端 API，
+      // 它的做法是用系统浏览器打开 `?dsh-pet-session=<id>`，由这里读参数、等会话列表到达再切会话。
+      // 不能固定延时一拍就切：实测约 300ms 时会话列表还没到，open 抛错被吞掉，
+      // 跳转就此丢失（详见 client/session-deeplink.ts 头注释）。
+      ctx.effect(() => {
+        const sessionId = sessionDeepLink(window.location.search);
+        if (!sessionId) return () => {};
+        return startSessionDeepLink({
+          sessionId,
+          list: (ctx as { sessions?: { list?: SessionListLike } }).sessions?.list,
+          // 0.2 的切会话入口是 uiWorkspace.openSession：用闭包包住调用保住类方法的接收者
+          open: (id: string) => {
+            const workspace = (ctx as { uiWorkspace?: { openSession?: (target: string) => void } }).uiWorkspace;
+            if (typeof workspace?.openSession !== 'function') throw new Error('uiWorkspace.openSession 不可用');
+            workspace.openSession(id);
+          },
+          clearParam: () => {
+            const url = new URL(window.location.href);
+            url.searchParams.delete(SESSION_DEEPLINK_PARAM);
+            window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+          },
+        });
+      }, 'dsh-pet: session deep link');
 
       // /pet 选择框：裸输 /pet 回车或菜单点选时弹出桌宠列表，选中后提交 /pet <id> 由 host 命令落地。
       // commandUi 已声明为服务依赖（上方 inject）：插件只在「/」命令服务就绪后 apply，

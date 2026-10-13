@@ -96,6 +96,9 @@ export const zh = {
   chatImageToggle: '对话配图',
   chatImageToggleHint:
     '对话时由 AI 按当前语境从表情包池挑一张配图（可不挑；图片映射在配置文件顶层 memes）。token：每条消息都要把整张清单附进请求，当前约 1.1k 字符（≈650 token，约碎碎念配图的 11 倍），并随图片数量线性增长；关掉则一个字符都不附。',
+  fullscreenToggle: '全屏让位',
+  fullscreenToggleHint:
+    '其它应用（视频播放器、演示、会议、游戏）全屏占用某块屏时，该屏上的桌面宠物自动隐藏，退出全屏后恢复；判定口径：非浏览器窗口铺满整块显示器面板（原生全屏），或该屏菜单栏被应用隐藏（系统级全屏展示，云游戏这类无边框铺满工作区的全屏就是这样）且窗口铺满工作区。只放大到工作区、菜单栏仍在的普通最大化窗口不算，不会误伤。浏览器（Chrome/Safari/Firefox/Edge 等）不触发让位，全屏看 DSH Web GUI 时宠物保留。系统若开启了「自动隐藏菜单栏」，第二条口径自动停用（否则任何最大化窗口都会让位），只保留铺满整块面板一条。探测走 macOS 自带的 osascript 与 CoreGraphics，不需要屏幕录制或辅助功能授权；仅 macOS 生效，探测失败时宠物保持显示（绝不把它永久关在隐藏态）。开关在保存时会重启桌宠进程，故保存后立即生效。',
   notifyGetPermission: '获取权限',
   notifyPermissionOk: '已获得通知权限，右下角出现测试通知。',
   notifyDenyUnsupported: '当前环境不支持系统通知（浏览器无 Notification API）。',
@@ -186,6 +189,9 @@ export const en = {
   chatImageToggle: 'Chat images',
   chatImageToggleHint:
     'Let the AI pick one meme from the pool that fits the current context (optional; mapping lives in the top-level `memes` config field). Tokens: every message carries the whole catalog — currently ~1.1k chars (~650 tokens, about 11x the whisper case) and growing with the number of images; turning this off appends nothing at all.',
+  fullscreenToggle: 'Hide on fullscreen',
+  fullscreenToggleHint:
+    'When another app (video player, slideshow, meeting, game) goes fullscreen on a display, the desktop pets on that display hide and come back when you leave fullscreen. Fullscreen means a non-browser window covering the whole display panel (native fullscreen), or the app hiding the menu bar (system-level fullscreen presentation, which is how borderless cloud games cover the work area) together with a window covering the whole work area. A window merely zoomed to the work area while the menu bar stays visible does not count. Browsers (Chrome/Safari/Firefox/Edge, ...) never trigger it, so the pets stay visible while you watch DSH fullscreen. If the system has "automatically hide the menu bar" enabled, that second rule is disabled automatically (otherwise every maximized window would hide the pets) and only the full-panel rule stays active. Detection uses built-in macOS tooling (osascript + CoreGraphics), needs no screen-recording or accessibility permission, and is macOS-only; if detection fails the pets stay visible. Saving restarts the pet process, so it takes effect immediately.',
   notifyGetPermission: 'Get permission',
   notifyPermissionOk: 'Notification permission granted — a test notification was sent.',
   notifyDenyUnsupported: 'System notifications are not supported in this environment (no Notification API).',
@@ -303,6 +309,9 @@ export function makePetConfigSection(rt: {
     // 重启提醒开关（全局：写用户级配置；同配图开关——与「保存」一起提交。host 侧每次工具调用现读，
     // 所以保存后立刻生效，不需要刷新页面）
     const [restartNotice, setRestartNotice] = useState(true);
+    // 全屏让位开关（全局：写用户级配置；与「保存」一起提交。host 侧在重启桌宠进程时现读，
+    // 保存时宿主正好会重启该进程，所以保存后立刻生效）
+    const [fullscreenHide, setFullscreenHide] = useState(true);
     // 权限申请按钮的反馈（就地显示在按钮旁，与全局保存反馈分离）
     const [permMsg, setPermMsg] = useState<{ kind: 'ok' | 'err' | ''; text: string }>({ kind: '', text: '' });
     useEffect(() => {
@@ -317,9 +326,10 @@ export function makePetConfigSection(rt: {
           if (typeof m.whisperImageEnabled === 'boolean') setWhisperImage(m.whisperImageEnabled);
           if (typeof m.chatImageEnabled === 'boolean') setChatImage(m.chatImageEnabled);
           if (typeof m.restartNoticeEnabled === 'boolean') setRestartNotice(m.restartNoticeEnabled);
+          if (typeof m.hideOnOtherAppFullscreen === 'boolean') setFullscreenHide(m.hideOnOtherAppFullscreen);
         })
         .catch(() => {
-          /* 成品拉取失败时保持默认（通知开、重启提醒开、配图关） */
+          /* 成品拉取失败时保持默认（通知开、重启提醒开、全屏让位开、配图关） */
         });
       return () => {
         alive = false;
@@ -343,6 +353,7 @@ export function makePetConfigSection(rt: {
             whisperImageEnabled: whisperImage,
             chatImageEnabled: chatImage,
             restartNoticeEnabled: restartNotice,
+            hideOnOtherAppFullscreen: fullscreenHide,
           }),
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -424,6 +435,7 @@ export function makePetConfigSection(rt: {
           whisperImageEnabled: whisperImage,
           chatImageEnabled: chatImage,
           restartNoticeEnabled: restartNotice,
+          hideOnOtherAppFullscreen: fullscreenHide,
         };
         const res = await fetch('/dsh-pet-7340/config', {
           method: 'PUT',
@@ -851,6 +863,7 @@ export function makePetConfigSection(rt: {
         ...(
           [
             ['restartNoticeToggle', restartNotice, setRestartNotice] as const,
+            ['fullscreenToggle', fullscreenHide, setFullscreenHide] as const,
             ['whisperImageToggle', whisperImage, setWhisperImage] as const,
             ['chatImageToggle', chatImage, setChatImage] as const,
           ] as const

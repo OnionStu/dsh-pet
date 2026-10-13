@@ -75,6 +75,8 @@ const required = [
   'cordis.patch.yml', // bundle patch（挂载声明）
   'runtime/electron-helper/main.js', // 桌面模式 Electron 主进程
   'runtime/electron-helper/pointer-target.js', // 桌面模式点击穿透兜底判定（main.js require，缺了会启动即崩）
+  'runtime/electron-helper/fullscreen-guard.js', // 桌面模式全屏让位判定（main.js require，缺了同样启动即崩）
+  'runtime/electron-helper/fullscreen-probe.jxa', // 桌面模式全屏探测（JXA，由 osascript 拉起；缺了该功能静默失效）
   'runtime/electron-helper/preload.js', // 桌面模式 preload 桥
   'runtime/electron-helper/renderer.js', // 桌面模式渲染端（宠物本体）
   'runtime/electron-helper/shared-core.js', // 桌面模式共享纯逻辑（src/shared 构建产物，window.PetShared）

@@ -81,6 +81,7 @@ import {
 } from './work-status';
 import { agentErrorFrame, reduceNotifyFrame, type HostNotifyFrame } from './notify-events';
 import { createRestartNoticeStore, restartNoticeToolDefinition } from './restart-notice';
+import { createPendingAlerts } from './pending-alerts';
 import { profileNameFrom, storageEntries } from './storage-paths';
 import {
   HelperProcess,
@@ -241,6 +242,10 @@ export function apply(ctx: any): void {
   // 内存随之清空，卡片自己消失：这就是它天然的消除事件，所以不设过期时间。
   // 见 ./restart-notice（自包含：DSH 事件表里没有「需要重启」这种结构化信号，只能靠显式标记）。
   const restartNotices = createRestartNoticeStore();
+  // 待交互提醒内存表（/alerts 端点读取）：从 DSH 会话事件推导「别的会话挂着审批/选择/计划评审」。
+  // 浏览器半侧有自己的版本（ctx.uiSession.pendingInteractions，只有网页里那份 ctx 才有），
+  // 桌面半侧拿不到那份状态，只能由 host 从事件表推导——见 ./pending-alerts。
+  const pendingAlerts = createPendingAlerts();
   /** 重启提醒开关（成品配置 main 条目的 restartNoticeEnabled；每次现读，改配置即时生效） */
   const restartNoticeEnabled = (): boolean => {
     try {
@@ -249,6 +254,16 @@ export function apply(ctx: any): void {
       return typeof v === 'boolean' ? v : true; // 缺失即内置默认（true）——合并器已填，这里只兜异常
     } catch {
       return true; // 配置读取异常不该让工具变成"静默不弹卡"
+    }
+  };
+  /** 全屏让位开关（成品配置 main 条目的 hideOnOtherAppFullscreen；启动/重启 Helper 时现读） */
+  const hideOnOtherAppFullscreen = (): boolean => {
+    try {
+      const main = readAllConfig(configPaths).main as Record<string, unknown> | undefined;
+      const v = main?.hideOnOtherAppFullscreen;
+      return typeof v === 'boolean' ? v : true; // 缺失即内置默认（true），合并器已填，这里只兜异常
+    } catch {
+      return true;
     }
   };
   /** 每会话最近状态（会话 id → 状态），多会话时取优先级最高的作展示（与 better-dsh-pet 同思路） */
@@ -535,6 +550,8 @@ export function apply(ctx: any): void {
           DSH_PET_BRIDGE: '1',
           // 每只桌面宠物一个局部小窗口：透传宠物列表（[{id,size}]）
           DSH_PET_PETS: JSON.stringify(desktopPetList()),
+          // 其它应用全屏时让位（仅 macOS 生效）：开关只有 0/1 两种取值，改开关时宿主会重启 Helper
+          DSH_PET_HIDE_ON_FULLSCREEN: hideOnOtherAppFullscreen() ? '1' : '0',
         },
         // bridge 协议处理器 = HTTP 路由同一份 handlePetRoute（业务逻辑唯一，两端天然一致）；
         // 素材过文件路径（main.js 自行读盘），json/text 过 body
@@ -666,7 +683,7 @@ export function apply(ctx: any): void {
               status: 400,
               obj: {
                 error:
-                  'invalid pet config: expected { pets:[{name?,id,size,balanceEnabled,display,position:{corner,marginX,marginY}}] }（display 为 web/desktop/both/none 之一；可选顶层 notificationsEnabled / whisperImageEnabled / chatImageEnabled 布尔）',
+                  'invalid pet config: expected { pets:[{name?,id,size,balanceEnabled,display,position:{corner,marginX,marginY}}] }（display 为 web/desktop/both/none 之一；可选顶层 notificationsEnabled / whisperImageEnabled / chatImageEnabled / restartNoticeEnabled / hideOnOtherAppFullscreen 布尔）',
               },
             };
           }
@@ -884,6 +901,37 @@ export function apply(ctx: any): void {
       };
     }
 
+    // 提醒汇总：/dsh-pet-7340/alerts（GET，no-cache）——**桌面半侧专用**
+    // 浏览器有自己的审批浮层（数据源是网页 ctx 的 pendingInteractions），不需要这条；
+    // 桌面宠物是另一个进程的透明窗，拿不到那份状态，只能轮询这里。
+    // 响应体分两组（排序/合并是展示层的事，host 只做数据源）：
+    //   restart = 需要重启宿主的提醒（复用 /restart-notice 的表，受 restartNoticeEnabled 门控）
+    //   pending = 待交互行（审批 / 选择题 / 计划评审，见 ./pending-alerts）
+    if (rest === 'alerts') {
+      if (method !== 'GET') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      const pending = pendingAlerts.snapshot();
+      const restart = restartNoticeEnabled() ? restartNotices.snapshot() : [];
+      return {
+        kind: 'json',
+        status: 200,
+        obj: {
+          ok: true,
+          // 轮询端按 ts 判断是否需要重渲染：两组来源各推进自己的时刻，取较大者
+          ts: Math.max(
+            pending.ts,
+            restart.reduce((max, item) => Math.max(max, item.ts), 0),
+          ),
+          restart: restart.map((item) => ({
+            sessionId: item.sessionId,
+            reason: item.reason,
+            ts: item.ts,
+          })),
+          pending: pending.items,
+        },
+        headers: { 'cache-control': 'no-cache, no-store' },
+      };
+    }
+
     // 重启提醒：/dsh-pet-7340/restart-notice（GET，no-cache）
     // agent 调 notify_restart_required 工具写入的内存表；浏览器 1s 轮询渲染成宠物头顶的提醒卡
     //（与审批卡同一浮层）+ 标签页角标。宿主重启后内存清空 = 提醒自动消失（天然消除事件）。
@@ -1015,6 +1063,9 @@ export function apply(ctx: any): void {
       // 今日用量折叠（纯内存、与 work-status 同一条事件流）：必须在下面的分支 return 之前调用，
       // 否则 request/header（记路由）与 assistant/message（记用量）会被后续的早退吞掉。
       usageFold.observe(sessionId, event);
+      // 待交互提醒（审批/选择题/计划评审 + 会话标题）：同一条事件流，桌面半侧经 /alerts 轮询。
+      // 放在下面那些 return 之前——它对全部事件类型都感兴趣（approval/*、tool/*、turn/end、session/title）。
+      pendingAlerts.observe(sessionId, event);
       if (type === 'todo/write') {
         // 任务文案：仅当会话正是当前展示会话时更新任务详情（否则不打断当前展示）
         if (workStatusBySession.has(sessionId)) {

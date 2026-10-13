@@ -1,0 +1,89 @@
+/**
+ * dsh-pet desktop helper —— 其它应用全屏探测（JXA，由主进程以
+ * `/usr/bin/osascript -l JavaScript <本文件>` 一次一跑，输出一行 JSON 到 stdout）。
+ *
+ * 为什么是 JXA：Electron 拿不到「别的应用有哪些窗口」，而 CGWindowListCopyWindowInfo 在
+ * macOS 上只需 osascript 自带的 ObjC 桥即可调用，**不需要屏幕录制或辅助功能授权**（实测不弹
+ * 任何权限框），也不引入任何 npm 原生依赖。
+ *
+ * 输出协议（主进程按行解析，见 fullscreen-guard.js 的 parseProbeOutput）：
+ *   {"v":2,"menuBarAutoHide":false,"menuBars":[{"x":0,"y":0,"width":1800,"height":39}],
+ *    "windows":[{"pid":4711,"app":"芒果TV","bundle":"com.mgtv.pcclientx","x":0,"y":0,"width":1800,"height":1169}]}
+ *
+ * 只报 layer 0（普通应用窗口）与 layer 24（菜单栏窗口，即 AppKit 的 NSMainMenuWindowLevel），
+ * 且只列**当前空间**在屏的窗口：别的 Space 里的全屏应用不会被列出，因此不会误判。
+ *
+ * 菜单栏窗口在列表里缺席，就等于「菜单栏此刻被某个应用隐藏了」——这是应用做系统级全屏展示的
+ * 直接证据，也是「无边框铺满工作区」那一类全屏（与普通最大化窗口几何完全相同）唯一可用的判据。
+ * 系统开启「自动隐藏菜单栏」时菜单栏平时就不可见，该信号失效，故一并上报这个开关值。
+ *
+ * 显示器面板不在这里输出（Electron 的 screen API 更准，且与宠物窗口同坐标系）。
+ * 判定（是否铺满、是不是浏览器、该不该隐藏）全部不在这里做，本脚本只负责采集。
+ */
+
+ObjC.import('CoreGraphics');
+ObjC.import('AppKit');
+
+/** 菜单栏窗口所在图层（NSMainMenuWindowLevel）；不校验 owner 名，避免名字取不到时把菜单栏误判成缺席 */
+var MENU_BAR_LAYER = 24;
+
+/** 采集当前空间内在屏的 layer 0 窗口与 layer 24 菜单栏窗口 */
+function collect() {
+  var opts = $.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements;
+  var list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo(opts, $.kCGNullWindowID));
+  var total = Number(list.count);
+  var bundles = {}; // pid -> bundle id（一层缓存，避免同一应用反复查）
+  var windows = [];
+  var menuBars = [];
+
+  for (var i = 0; i < total; i++) {
+    var win = list.objectAtIndex(i);
+    var layer = Number(win.objectForKey('kCGWindowLayer').intValue);
+    var bounds = win.objectForKey('kCGWindowBounds');
+    var rect = {
+      x: Number(bounds.objectForKey('X').doubleValue),
+      y: Number(bounds.objectForKey('Y').doubleValue),
+      width: Number(bounds.objectForKey('Width').doubleValue),
+      height: Number(bounds.objectForKey('Height').doubleValue),
+    };
+    if (layer === MENU_BAR_LAYER) {
+      menuBars.push(rect);
+      continue;
+    }
+    if (layer !== 0) continue;
+
+    var pid = Number(win.objectForKey('kCGWindowOwnerPID').intValue);
+    var app = ObjC.unwrap(win.objectForKey('kCGWindowOwnerName')) || '';
+    if (bundles[pid] === undefined) {
+      var running = $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);
+      bundles[pid] = running ? ObjC.unwrap(running.bundleIdentifier) || '' : '';
+    }
+    windows.push({
+      pid: pid,
+      app: String(app),
+      bundle: String(bundles[pid]),
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    });
+  }
+  return { windows: windows, menuBars: menuBars };
+}
+
+/** 写一行到 stdout 并立刻落盘：主进程按行读，缓冲会让这一轮白白超时 */
+function emit(text) {
+  var data = $.NSString.alloc.initWithUTF8String(text).dataUsingEncoding($.NSUTF8StringEncoding);
+  $.NSFileHandle.fileHandleWithStandardOutput.writeData(data);
+}
+
+var data = collect();
+emit(
+  JSON.stringify({
+    v: 2,
+    // 系统「自动隐藏菜单栏」开关：开着时菜单栏平时就不可见，菜单栏信号不可用
+    menuBarAutoHide: $.NSUserDefaults.standardUserDefaults.boolForKey('_HIHideMenuBar') === true,
+    menuBars: data.menuBars,
+    windows: data.windows,
+  }) + '\n',
+);

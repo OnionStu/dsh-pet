@@ -133,6 +133,28 @@
       .pet-bub-tier-idle {
         color: #2e9e4f;
       }
+      /* 提醒卡（审批/选择题/计划评审/重启提醒）：行视觉来自 shared 的 ALERT_CSS（与浏览器浮层同一份），
+         这里只补桌面专属的**挂载与尺寸**——浏览器那边是 body 级 fixed 浮层 + 逐帧像素定位，
+         桌面直接绝对定位在宠物盒内，底边锚点与 .pet-bubble 同一行公式（两卡不同时出现，见下条）。 */
+      .pet-sprite .dsh-pet-alerts {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: calc(100% - var(--pet-size, 462px) * 0.108);
+        /* 窗口上沿只有 0.5×size 的余量：卡片超了会被窗口裁掉，故封顶 + 可滚（滚动条藏起来，
+           透明窗上一条灰条很出戏；行数通常个位数，滚动是兜底） */
+        max-height: calc(var(--pet-size, 462px) * 0.58);
+        overflow-y: auto;
+        scrollbar-width: none;
+      }
+      .pet-sprite .dsh-pet-alerts::-webkit-scrollbar {
+        display: none;
+      }
+      /* 有提醒时藏掉自身气泡（余额/碎碎念/work-status）：提醒卡独占头顶，与浏览器
+         [data-dsh-pet-alerts] 的二选一同语义（那边藏 .dsh-pet-bubble，这里藏 .pet-bubble） */
+      .pet-sprite[data-pet-alerts] .pet-bubble {
+        display: none !important;
+      }
       /* 配置错误提示（大声报错，不做静默兜底）：配置缺失/非法时显示，每 5s 自动重试 */
       .pet-error {
         position: fixed;
@@ -165,9 +187,10 @@
     <div id="root"></div>
     <div id="pet-error" class="pet-error"></div>
     <!-- 共享纯逻辑（src/shared 的 iife 构建产物，window.PetShared）——经经典 script，避开 file:// ESM 的 CORS 限制。
-         桌面端同模式拆分：constants（基础设施）→ sprite（宠物本体）→ events（事件联动）→ renderer（启动入口） -->
+         桌面端同模式拆分：constants（基础设施）→ alerts（提醒卡）→ sprite（宠物本体）→ events（事件联动）→ renderer（启动入口） -->
     <script src="./shared-core.js"></script>
     <script src="./constants.js"></script>
+    <script src="./alerts.js"></script>
     <script src="./sprite.js"></script>
     <script src="./events.js"></script>
     <script src="./renderer.js"></script>

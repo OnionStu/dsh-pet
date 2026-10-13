@@ -222,3 +222,22 @@ describe('readAllConfig —— 表情包开关合并（缺失取默认 / 非法�
     assert.equal(merged.main.whisperImageEnabled, true); // 回退默认 true
   });
 });
+
+describe('全屏让位开关 —— 白名单写入 / 默认 / 非法回退', () => {
+  test('随请求体写入（布尔原样保留）', () => {
+    assert.equal(saveOnce({ pets: PETS, hideOnOtherAppFullscreen: false })?.hideOnOtherAppFullscreen, false);
+  });
+
+  test('未传时不凭空造字段', () => {
+    assert.equal('hideOnOtherAppFullscreen' in (saveOnce({ pets: PETS }) ?? {}), false);
+  });
+
+  test('传非布尔 → 整体拒绝（宿主回 400）', () => {
+    assert.equal(saveOnce({ pets: PETS, hideOnOtherAppFullscreen: 'yes' }), null);
+  });
+
+  test('内置默认层有值即可读；用户层写了非法值回落内置默认', () => {
+    const paths = withBase({ hideOnOtherAppFullscreen: false }, { hideOnOtherAppFullscreen: 1 });
+    assert.equal(readAllConfig(paths).main.hideOnOtherAppFullscreen, false);
+  });
+});

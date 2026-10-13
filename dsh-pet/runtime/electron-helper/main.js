@@ -21,11 +21,14 @@
  */
 const { app, BrowserWindow, ipcMain, screen, shell, protocol } = require('electron');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, execFile } = require('node:child_process');
 const { readFileSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
 const { decideWindowIgnore } = require('./pointer-target.js');
+// 其它应用全屏时让位的判定与状态机（窗口采集由 fullscreen-probe.jxa 负责）
+// 注意别名：本文件已有一个 parseProbeOutput（DPI 探测子进程的输出解析），两者不可同名
+const { createFullscreenGuard, parseProbeOutput: parseFullscreenProbe } = require('./fullscreen-guard.js');
 
 // 允许无用户手势直接播放（余额动画等）
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -49,7 +52,7 @@ if (process.platform === 'win32') {
   app.disableHardwareAcceleration();
 }
 
-// ---------- 全局 DPI 线性化（多显示器异构缩放的根因修复） ----------
+// ---------- 全局 DPI 线性化（多显示器异构缩放的根因修复，**仅 Windows**） ----------
 //
 // Windows 上 Chromium 的 DIP↔物理 换算是**逐显示器**的仿射变换，而且
 // ScreenWin::DIPToScreenRect(hwnd, rect) 用的是「hwnd 当前归属屏」的那一组参数：
@@ -79,6 +82,12 @@ if (process.platform === 'win32') {
 // 物理大小反而一致了）。探测失败就整个不启用，退回修复前行为，不做没有补偿的缩放。
 //
 // 环境变量 DSH_PET_FORCE_DSF：'0' = 关闭本机制；其它正数 = 强制该值（排障用，会踩上面的 bug）。
+//
+// 平台范围：整节只为 Windows 而设——上面那条仿射变换是 ScreenWin 的实现细节，macOS/Linux 没有。
+// macOS 上强制 DSF 不改变 CSS px↔点 的映射（窗口永远按点布局，DSF 只影响背板分辨率），
+// 于是 petScale() 的「物理像素补偿」退化成纯粹的放大：实测 Retina（primaryScale=2）→ petScale=2
+// → 整窗 setZoomFactor(2)，宠物 462 CSS px 被画成 924 点（浏览器 overlay 是 462 点），
+// 气泡/右键菜单/积分弹窗/聊天框一并 2×。故下面按 win32 门控（Linux 同理）。
 //
 // 取值时机是个麻烦：switch 必须在 app ready 之前设，而那时 screen 模块还不可用。
 // 所以首次启动 spawn 一个自己的探测子进程（DSH_PET_DPI_PROBE=1，只打印 scaleFactor 就退出，
@@ -153,7 +162,8 @@ function probePrimaryScale() {
 let PRIMARY_SCALE = 0;
 /** 实际生效的强制缩放（0 = 未启用，坐标系维持修复前的逐屏 DIP） */
 let FORCED_SCALE = 0;
-if (!DPI_PROBE && process.env.DSH_PET_FORCE_DSF !== '0') {
+// win32 门控：非 Windows 上强制 DSF 只降背板分辨率、不换坐标系，补偿纯属放大（见上节末段）。
+if (process.platform === 'win32' && !DPI_PROBE && process.env.DSH_PET_FORCE_DSF !== '0') {
   PRIMARY_SCALE = readCachedPrimaryScale() || probePrimaryScale();
   const override = Number(process.env.DSH_PET_FORCE_DSF);
   const forced = Number.isFinite(override) && override > 0 ? override : PRIMARY_SCALE > 0 ? 1 : 0;
@@ -257,6 +267,102 @@ let pointerFallbackPaused = false;
  * 而渲染端知道（拖拽中 / 菜单开着 / 对话弹窗开着）。所以只由它上报，busy 期间本进程绝不翻回穿透。
  */
 const inputBusy = new Map();
+
+// ---------- 其它应用全屏时让位（仅 macOS） ----------
+//
+// 需求：视频播放器、演示、会议等全屏占用某块屏时，该屏上的宠物自动隐藏，退出全屏后恢复；
+// 浏览器不算其它应用，全屏看 DSH Web GUI 时宠物保留（配置项 hideOnOtherAppFullscreen，
+// 宿主经 DSH_PET_HIDE_ON_FULLSCREEN 透传，设置页保存时宿主会重启本进程，故保存即生效）。
+//
+// 探测方式：每轮 spawn 一次 osascript 跑 fullscreen-probe.jxa，取当前空间内在屏的 layer 0 窗口
+// 与 layer 24 菜单栏窗口。菜单栏在不在屏，是判断「应用是否做了系统级全屏展示」的直接证据：
+// 原生全屏会隐藏菜单栏，云游戏/播放器那种无边框铺满工作区的全屏也会，而普通最大化窗口不会，
+// 后者与前者的窗口几何完全相同，只有这个信号能区分。选一次性子进程而非长驻进程，是因为
+// 失败即跳过本轮、天然自愈，不需要进程保活与心跳逻辑。判定与状态机全在 fullscreen-guard.js
+// （纯函数，已单测）；本进程只按结果调 hide()/show()。探测失败按保守方向收敛：宁可让宠物出来，
+// 也不把它永久关在隐藏态。
+
+/** 全屏让位开关（宿主透传；未透传按开启，手动 start-desktop 的开发流也能生效） */
+const HIDE_ON_FULLSCREEN = process.env.DSH_PET_HIDE_ON_FULLSCREEN !== '0';
+/** 探测轮询间隔（ms）：实测一轮约 0.12s 墙钟、0.07s CPU（约占单核 5%），1.5s 周期下隐藏延迟无感 */
+const FULLSCREEN_POLL_MS = 1500;
+/** 单轮探测超时（ms）：正常约 0.12s，超时即判本轮失败（探测失败不会导致隐藏） */
+const FULLSCREEN_PROBE_TIMEOUT_MS = 3000;
+/** 本轮探测在途标记：上一轮未回就跳过本轮，不让子进程堆积 */
+let fullscreenProbing = false;
+let fullscreenTimer;
+
+/** 按判定结果翻转窗口可见性（只在状态确实改变时调用，hide/show 会打断渲染端的合成） */
+function applyFullscreenVerdict(verdict) {
+  if (verdict.hide.length > 0) {
+    console.error('[dsh-pet-desktop-helper] fullscreen: hide ' + verdict.hide.join(','));
+  }
+  if (verdict.show.length > 0) {
+    console.error('[dsh-pet-desktop-helper] fullscreen: show ' + verdict.show.join(','));
+  }
+  for (const id of verdict.hide) {
+    const win = windows.get(id);
+    if (win && !win.isDestroyed() && win.isVisible()) win.hide();
+  }
+  for (const id of verdict.show) {
+    const win = windows.get(id);
+    if (win && !win.isDestroyed() && !win.isVisible()) win.show();
+  }
+}
+
+/** 一轮探测：采集窗口与屏，交给状态机，落地 hide/show */
+function fullscreenTick(guard) {
+  if (fullscreenProbing) return;
+  fullscreenProbing = true;
+  execFile(
+    '/usr/bin/osascript',
+    ['-l', 'JavaScript', path.join(__dirname, 'fullscreen-probe.jxa')],
+    { timeout: FULLSCREEN_PROBE_TIMEOUT_MS },
+    (error, stdout) => {
+      fullscreenProbing = false;
+      try {
+        // skip：渲染端正拿着鼠标输入（拖拽/右键菜单/对话弹窗）的宠物本轮不参与判定，
+        // 避免在全屏切换的瞬间把用户正在操作的窗口抽走
+        const pets = [];
+        const skip = [];
+        for (const [id, win] of windows) {
+          if (win.isDestroyed()) continue;
+          const b = win.getBounds();
+          pets.push({ id, center: { x: b.x + b.width / 2, y: b.y + b.height / 2 } });
+          if (inputBusy.get(win.id) === true) skip.push(id);
+        }
+        let snapshot = null;
+        if (!error) snapshot = parseFullscreenProbe(stdout);
+        const verdict = guard.update({
+          snapshot,
+          // 每屏的完整面板 + 工作区：判定两者都要用（无边框全屏只铺满工作区）
+          screens: screen.getAllDisplays().map((d) => ({ ...d.bounds, workArea: d.workArea })),
+          pets,
+          ownPid: process.pid,
+          skip,
+        });
+        applyFullscreenVerdict(verdict);
+      } catch (e) {
+        // 让位是锦上添花的能力：任何异常都不该把主进程带走（宠物照常显示）
+        console.error('[dsh-pet-desktop-helper] fullscreen tick failed:', String(e && e.message ? e.message : e));
+      }
+    },
+  );
+}
+
+/** 启动让位探测（仅 macOS：探测依赖 osascript 与 CoreGraphics，其它平台没有对应实现） */
+function startFullscreenGuard() {
+  if (!HIDE_ON_FULLSCREEN || process.platform !== 'darwin' || fullscreenTimer) return;
+  const guard = createFullscreenGuard();
+  fullscreenTimer = setInterval(() => fullscreenTick(guard), FULLSCREEN_POLL_MS);
+}
+
+/** 停止让位探测（进程退出前调用；已隐藏的窗口随进程退出一起消失） */
+function stopFullscreenGuard() {
+  if (!fullscreenTimer) return;
+  clearInterval(fullscreenTimer);
+  fullscreenTimer = undefined;
+}
 
 /**
  * 桌面宠物列表（[{id,size}]）：宿主经 DSH_PET_PETS 透传（每只宠物一个窗口）。
@@ -575,6 +681,9 @@ app.whenReady().then(() => {
 
   createPetWindows();
 
+  // 其它应用全屏时让位（仅 macOS；开关经 DSH_PET_HIDE_ON_FULLSCREEN 透传）
+  startFullscreenGuard();
+
   // 宠物窗口跟随：renderer 逐帧上报窗口内容区位置/尺寸
   ipcMain.on('pet:set-bounds', (event, bounds) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -740,6 +849,30 @@ app.whenReady().then(() => {
             errorVisible: document.getElementById('pet-error').classList.contains('visible'),
             errorText: document.getElementById('pet-error').textContent,
             firstBubble: (document.querySelector('.pet-bubble.is-on') || { textContent: '' }).textContent.slice(0, 120),
+            alertRows: (window.__dshPetDebug && window.__dshPetDebug.alertRows) || 0,
+            // 卡片与宠物的实测矩形（窗口局部坐标）：像素级调卡片位置时用它，别靠肉眼猜
+            alertRect: (function () {
+              var card = document.querySelector('.dsh-pet-alerts');
+              var stage = document.querySelector('.pet-stage');
+              if (!card || card.hidden || !stage) return null;
+              var c = card.getBoundingClientRect();
+              var p = stage.getBoundingClientRect();
+              return {
+                card: { top: Math.round(c.top), bottom: Math.round(c.bottom), left: Math.round(c.left), right: Math.round(c.right) },
+                pet: { top: Math.round(p.top), bottom: Math.round(p.bottom) },
+              };
+            })(),
+            // 有提醒时气泡必须让位（.pet-sprite[data-pet-alerts] .pet-bubble{display:none}）：
+            // 光看 textContent 分不出"隐藏"和"没内容"，故直接读计算样式
+            bubbleVisible: (function () {
+              var b = document.querySelector('.pet-bubble');
+              return b ? getComputedStyle(b).display !== 'none' : null;
+            })(),
+            alertText: Array.prototype.map
+              .call(document.querySelectorAll('.dsh-pet-alert-row'), function (el) {
+                return el.textContent;
+              })
+              .join(' / '),
             hitCursor: (function () {
               var hit = document.querySelector('.pet-hit');
               return hit ? getComputedStyle(hit).cursor : '';
@@ -936,5 +1069,6 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  stopFullscreenGuard();
   app.quit();
 });

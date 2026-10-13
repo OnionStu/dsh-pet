@@ -101,6 +101,7 @@ dsh plugin --profile web add file:D:/path/to/dsh-pet
 - **依赖**：首次启动自动探测/下载 Electron（`~/.dsh/electron/`，也可 `cd dsh-pet && npm run ensure:electron` 手动触发）；缺失时仅日志告警，不影响浏览器形态
 - **开关 = 每只宠物的必填字段 `display`**：`web` = 仅浏览器 / `desktop` = 仅桌面 / `both` = 两者 / `none` = 都不显示；桌面模式渲染 display 含 desktop 的**全部**宠物（多开同屏，与浏览器一致），设置页「桌宠配置」编辑即时生效
 - 桌面端数据走独立进程管道，不依赖 DSH 的 HTTP 路由，不受 web 访问闸门影响
+- **其它应用全屏时自动让位（仅 macOS）**：视频播放器、演示、会议等其它应用全屏占用某块屏时，该屏上的桌面宠物自动隐藏，退出全屏后恢复；浏览器全屏不触发让位，全屏看 DSH Web GUI 时宠物保留。探测走 macOS 自带的 `osascript` 与 CoreGraphics，不需要屏幕录制或辅助功能授权；探测失败一律按无全屏处理，不会把宠物永久留在隐藏态。开关 = 配置项 `hideOnOtherAppFullscreen`（默认开，设置页可关）
 - 本地调试：`cd dsh-pet && npm run start:desktop -- http://127.0.0.1:3080/dsh-pet-7340/config`（无宿主时自动回落 HTTP 路径）
 
 ## ⚙️ 余额展示（Balance）
@@ -169,6 +170,7 @@ DSH 设置 → 「桌宠配置」：
 | `animationWeights`     | 动画链播放权重（idle / turn / move）                                                    | 同 `animationWeights` 结构 |
 | `eventsRefreshSec`     | 事件刷新周期（秒）                                                                      | 同 `eventsRefreshSec` 结构 |
 | `notificationsEnabled` | 系统通知总开关（布尔）                                                                  | 同 `notificationsEnabled`  |
+| `hideOnOtherAppFullscreen` | 其它应用全屏时让位开关（布尔，默认开，仅 macOS）                                     | 同 `hideOnOtherAppFullscreen` |
 
 > 覆盖语义：用户层给出即**整体替换**该字段（如写了 `animations` 就用你的整份动画池，替代默认），没写的字段回落包内默认。校验在插件加载时执行——格式错误会在 DSH 控制台显式报错，不会静默运行残缺配置。
 

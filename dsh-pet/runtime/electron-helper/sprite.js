@@ -155,6 +155,20 @@ class PetSprite {
     stage.appendChild(this.hit);
     this.el.appendChild(this.bubble);
     this.el.appendChild(stage);
+    // 提醒卡（审批/选择/计划评审/重启提醒）：**只在主宠物窗口**（petIndex 0）渲染——
+    // 与浏览器浮层只跟主宠物同语义；多开时不会每只窗口都弹一份。
+    // 卡片与气泡共用同一锚点（见 index.html 的 .dsh-pet-alerts 定位），有提醒时气泡让位。
+    this.alertCard =
+      CONFIG.petIndex === 0
+        ? createAlertCard({
+            container: this.el,
+            size: this.size,
+            onOpenSession: (id) => this.openSessionInBrowser(id),
+            onDismiss: (id) => this.dismissRestartNotice(id),
+          })
+        : null;
+    this.alertSig = ''; // 上一次渲染的行签名（变化才重渲染）
+    this.alertRows = []; // 当前渲染的行（乐观移除/失败回滚都以轮询为事实来源）
     rootEl.appendChild(this.el);
     this.position();
 
@@ -952,7 +966,12 @@ class PetSprite {
     const wy = Number.isFinite(e.clientY) ? e.clientY : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
     const px = wx - this.margin.l;
     const py = wy - this.margin.t;
-    this.setInteractive(px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
+    const overBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+    // 提醒卡在宠物头顶的窗口余量区（身体命中区之外）：不算进来的话，光标一移到卡片上就被
+    // 翻回穿透，卡片点不动、也滚不动。主进程兜底通道对"窗口内、身体外"是**保持当前状态**
+    // （见 pointer-target.js），所以这里翻成可交互后不会被它翻回去。
+    const overCard = this.alertCard ? this.alertCard.containsPoint(wx, wy) : false;
+    this.setInteractive(overBody || overCard);
   }
 
   onClick() {
@@ -1163,6 +1182,55 @@ class PetSprite {
     window.__dshPetDebug.chatOpen = true;
     this.syncInputBusy();
     this.setInteractive(true);
+  }
+
+  // ---- 提醒卡（审批/选择/计划评审/重启提醒，主宠物窗口专属；数据来自 host /alerts）----
+
+  /**
+   * 一拍提醒数据：派生行 → 变化才重渲染（行模型与样式都来自 shared，本方法只管挂载与状态）。
+   */
+  onAlertsTick(payload) {
+    if (!this.alertCard) return;
+    this.applyAlertRows(S.alertRowsFromPayload(payload));
+  }
+
+  /**
+   * 应用一批提醒行：签名未变则整个跳过（DOM 重建会打断卡片上的悬停/滚动），
+   * 变化则重渲染卡片 + 决定气泡是否让位（与浏览器 data-dsh-pet-alerts 同语义）。
+   */
+  applyAlertRows(rows) {
+    if (!this.alertCard) return;
+    const sig = rows.map((r) => r.key).join('|');
+    if (sig === this.alertSig) return;
+    this.alertSig = sig;
+    this.alertRows = rows;
+    this.alertCard.update(rows);
+    // 有提醒时藏掉自身气泡（余额/碎碎念/work-status）：卡片独占头顶，与浏览器同一取舍
+    if (rows.length > 0) this.el.setAttribute('data-pet-alerts', '');
+    else this.el.removeAttribute('data-pet-alerts');
+    window.__dshPetDebug.alertRows = rows.length;
+    this.renderBubble();
+  }
+
+  /** 行点击 → 用系统默认浏览器打开 GUI 并直达该会话（网页半侧读 ?dsh-pet-session 调 sessions.open） */
+  openSessionInBrowser(sessionId) {
+    if (!sessionId) return;
+    const url = ORIGIN + '/?' + S.SESSION_DEEPLINK_PARAM + '=' + encodeURIComponent(sessionId);
+    if (window.petBridge && window.petBridge.openDshSite) window.petBridge.openDshSite(url);
+    else window.open(url, '_blank');
+  }
+
+  /** 重启提醒行的 × → 宿主内存表消除（复用浏览器那条 POST；失败下一拍轮询自然纠正） */
+  dismissRestartNotice(sessionId) {
+    if (!sessionId) return;
+    // 乐观移除：立刻把这一行从卡片上摘掉（不等 POST 回来）——点了没反应会让人以为没点上。
+    // POST 失败也不回滚：下一拍轮询（1s）会把宿主的真实状态拉回来，那才是唯一事实来源。
+    this.applyAlertRows((this.alertRows || []).filter((r) => !(r.kind === 'restart' && r.sessionId === sessionId)));
+    void fetch(BASE + '/restart-notice/dismiss', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    }).catch((e) => console.warn('[dsh-pet] 消除重启提醒失败', e));
   }
 
   // 「回到初始位置」菜单：停掉漫游/移动，清掉拖拽/漫游留下的会话位置，回到配置角落

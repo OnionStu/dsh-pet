@@ -206,6 +206,8 @@ function topFieldValid(key: string, value: unknown): boolean {
       return typeof value === 'boolean';
     case 'chatImageEnabled':
       return typeof value === 'boolean';
+    case 'hideOnOtherAppFullscreen':
+      return typeof value === 'boolean';
     case 'animations':
       return animationsValid(value);
     case 'animationWeights':
@@ -495,12 +497,15 @@ export function saveUserConfig(
   if (cie !== undefined && typeof cie !== 'boolean') return null;
   const rne = o.restartNoticeEnabled;
   if (rne !== undefined && typeof rne !== 'boolean') return null;
-  // 白名单可编辑字段：pets 来自请求体、四个全局开关来自请求体（未传则不写）
+  const hof = o.hideOnOtherAppFullscreen;
+  if (hof !== undefined && typeof hof !== 'boolean') return null;
+  // 白名单可编辑字段：pets 来自请求体、五个全局开关来自请求体（未传则不写）
   const outConfig: { pets: unknown[]; [key: string]: unknown } = { pets: out };
   if (ne !== undefined) outConfig.notificationsEnabled = ne;
   if (wie !== undefined) outConfig.whisperImageEnabled = wie;
   if (cie !== undefined) outConfig.chatImageEnabled = cie;
   if (rne !== undefined) outConfig.restartNoticeEnabled = rne;
+  if (hof !== undefined) outConfig.hideOnOtherAppFullscreen = hof;
   // 透传保留：请求体未携带的顶层字段，从 existing（磁盘现有用户文件）原样带回——
   // 设置页只提交 pets(+全局开关)，手改的 physics/whisperPrompt/memes/... 借此保住。
   // 全局开关只在「请求体传了」时才算白名单（已由上方写入）；未传时走这里透传磁盘旧值——
@@ -510,6 +515,7 @@ export function saveUserConfig(
   if (wie !== undefined) bodyOwned.add('whisperImageEnabled');
   if (cie !== undefined) bodyOwned.add('chatImageEnabled');
   if (rne !== undefined) bodyOwned.add('restartNoticeEnabled');
+  if (hof !== undefined) bodyOwned.add('hideOnOtherAppFullscreen');
   if (existing && typeof existing === 'object') {
     for (const key of Object.keys(existing)) {
       if (bodyOwned.has(key)) continue; // 白名单字段由请求体决定

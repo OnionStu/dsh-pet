@@ -1,10 +1,11 @@
 // 跨会话提醒浮层引擎（client 半侧，浏览器专属）：把「别的会话正挂着待审批/待选择」与
 // 「某个会话在等你重启 DSH」变成宠物头顶的独立浮层气泡卡 + 标签页标题角标。
 // 本文件是**浮层本体**（定位/渲染/让位/角标）；数据源有两条、各自独立：
-//   ① 审批/选择题（本文件的 deriveAlerts）：纯 client 路线（方案 A）——
-//      - 数据源 = ctx.uiSession.pendingInteractions（会话 → 待交互条目；审批被处理即从 map 移除，天然消失）
-//      - 会话标题/当前会话 = ctx.sessions.list（SessionListState：byId[].displayTitle / current）
-//      - 行点击 → ctx.sessions.open(sessionId) 切到该会话
+//   ① 审批/选择题（./host-pending 的轮询 + derivePendingRows）：轮询 host 的 /alerts 端点。
+//      0.1 里这条路走 ctx.uiSession.pendingInteractions（客户端 Map），0.2 把这个读面
+//      移除了（只剩 registerPendingInteraction 写侧），浏览器侧没有别的跨会话推送通道；
+//      host 的 pending-alerts 表本来就在（为桌面宠物做），浮层直接轮询它，两端同一份数据。
+//      会话标题/当前会话 = ctx.sessions.list；行点击 → ctx.sessions.open(sessionId) 切到该会话。
 //   ② 重启提醒（./restart-notice 提供轮询与派生）：agent 调 notify_restart_required 工具 →
 //      host 内存表 → 1s 轮询 → 提醒行（**不过滤当前会话**，理由见 restart-notice.ts）
 // 浮层是 body 级 position:fixed 的独立 DOM（不碰 React 宠物卡），每拍读取主宠物
@@ -28,19 +29,17 @@ import {
   type RestartNoticeItem,
   type RestartNoticePoll,
 } from './restart-notice';
+import {
+  derivePendingRows,
+  startPendingAlerts,
+  type HostPendingItem,
+  type PendingAlertRow,
+  type PendingAlertsPoll,
+} from './host-pending';
 import { handBackCenterColumn } from './hand-back';
+import { ALERT_CSS } from '../shared/alerts';
 
 // ---------- 待交互条目窄接口（宽松取值，防御上游形状变化） ----------
-
-/** uiSession.pendingInteractions 的值（DSH 域自行声明 kind，这里只描述用到的面） */
-interface PendingEntry {
-  key?: unknown;
-  kind?: unknown;
-  sessionId?: unknown;
-  toolName?: unknown;
-  reason?: unknown;
-  questions?: unknown;
-}
 
 /** sessions.list 快照的窄接口（SessionListState 的展示面） */
 interface SessionListStateLike {
@@ -48,59 +47,24 @@ interface SessionListStateLike {
   byId?: Record<string, { displayTitle?: unknown; title?: unknown }>;
 }
 
-/** 一条审批/选择题提醒行（渲染与点击的最小单元；导出供 planAlertRows 的单测构造） */
-export interface ApprovalAlertRow {
-  /** 渲染 key：交互 key 优先，退化会话+kind（同会话可能挂多个审批） */
-  key: string;
-  sessionId: string;
-  /** 会话标题（displayTitle 已含 title → 项目名 → id 前 8 位的 fallback） */
-  label: string;
-  /** 「等你审批 · 工具」/「等你选择 · 问题」 */
-  text: string;
-  kind: 'approval' | 'question';
+/** uiSession 的窄接口（只用到「当前会话」这个读面：current 是一个绑定源，value.key 是会话 id） */
+interface UiSessionLike {
+  current?: { getSnapshot?: () => { key?: unknown } | undefined; value?: { key?: unknown } };
 }
+
+/** 当前会话 id（它的行不提醒：已经在看就别催）；读不到时返回空串（不过滤，与桌面端一致） */
+function currentSessionId(uiSession: UiSessionLike | undefined): string {
+  const source = uiSession?.current;
+  const value = typeof source?.getSnapshot === 'function' ? source.getSnapshot() : source?.value;
+  return value && typeof value.key === 'string' ? value.key : '';
+}
+
+/** 一条审批/选择题提醒行（渲染与点击的最小单元；与 host-pending 的 PendingAlertRow 同构，
+ *  导出供 planAlertRows 的单测构造） */
+export type ApprovalAlertRow = PendingAlertRow;
 
 /** 浮层里的一行（两条数据源的并集；RestartAlertRow 来自 ./restart-notice） */
 export type AlertRow = ApprovalAlertRow | RestartAlertRow;
-
-/** 需要用户回应的交互 kind（审批 / 选择题 / 计划评审）；其余域值忽略 */
-const INTERACTIVE_KINDS = new Set(['approval', 'question', 'plan-review']);
-
-/** 派生审批/选择题行：非当前会话的待交互条目；当前会话过滤不提醒（已经在看就别催）。
- *  重启提醒**不走**这条过滤（见 ./restart-notice 的 deriveRestartRows）。 */
-export function deriveAlerts(
-  pending: ReadonlyMap<string, PendingEntry>,
-  list: SessionListStateLike,
-): ApprovalAlertRow[] {
-  const current = typeof list.current === 'string' ? list.current : '';
-  const byId = list.byId ?? {};
-  const rows: ApprovalAlertRow[] = [];
-  for (const [sessionId, entry] of pending) {
-    const kind = typeof entry?.kind === 'string' ? entry.kind : '';
-    if (!INTERACTIVE_KINDS.has(kind)) continue;
-    if (sessionId === current) continue;
-    const summary = byId[sessionId];
-    const label =
-      (summary && typeof summary.displayTitle === 'string' && summary.displayTitle) || sessionId.slice(0, 8);
-    const toolName = typeof entry.toolName === 'string' ? entry.toolName : '';
-    const reason = typeof entry.reason === 'string' ? entry.reason : '';
-    const q =
-      (Array.isArray(entry.questions) && typeof entry.questions[0]?.question === 'string'
-        ? entry.questions[0].question
-        : '') || '';
-    const text =
-      kind === 'approval' ? '等你审批' + (toolName ? ' · ' + toolName : '') : '等你选择' + (q ? ' · ' + q : '');
-    void reason; // 审批理由暂不进气泡主文案（保持行紧凑）；需要时拼进 text
-    rows.push({
-      key: typeof entry.key === 'string' && entry.key ? entry.key : sessionId + ':' + kind,
-      sessionId,
-      label,
-      text,
-      kind: kind === 'approval' ? 'approval' : 'question', // plan-review 归入「等你选择」一档（文案已按非 approval 分支拼）
-    });
-  }
-  return rows;
-}
 
 // ---------- 渲染计划：重启折叠（>= 阈值时折成汇总行 + 紧凑标题行） ----------
 // 折叠规则是纯数据变换，抽成 planAlertRows 供单测钉住（不碰 DOM，与 restart-notice
@@ -162,52 +126,8 @@ function syncTitleBadge(count: number): void {
 // 有审批时给 root 加 data-dsh-pet-alerts，CSS 隐藏其内部所有 .dsh-pet-bubble
 // （余额/work-status 气泡）→ 实现「有审批优先审批卡」的二选一，杜绝多气泡重叠。
 
-/** 浮层样式：白泡+软糖体系数随 --dsh-pet-size（读自主宠物 root 的 CSS 变量）缩放 */
-const alertCss = [
-  '.dsh-pet-alerts{position:fixed;z-index:10001;display:flex;flex-direction:column;gap:calc(var(--dsh-pet-size)*0.014);' +
-    'min-width:calc(var(--dsh-pet-size)*0.26);max-width:calc(var(--dsh-pet-size)*0.7);pointer-events:none;' +
-    'font-family:"ShangshouSoftCandy","Yuanti SC","YouYuan","幼圆","Comic Sans MS","PingFang SC","Microsoft YaHei",sans-serif}',
-  '.dsh-pet-alerts[hidden]{display:none}',
-  // 有提醒时藏掉宠物自身的全部气泡（余额/碎碎念/work-status），提醒卡独占头顶
-  '.dsh-pet-root[data-dsh-pet-alerts] .dsh-pet-bubble{display:none!important}',
-  // 底部小尾巴指向下方宠物（与 bubble.ts 同款三角）
-  '.dsh-pet-alerts::after{content:"";position:absolute;left:50%;bottom:calc(var(--dsh-pet-size)*-0.017);' +
-    'transform:translateX(-50%);border:calc(var(--dsh-pet-size)*0.017) solid transparent;' +
-    'border-top-color:rgba(255,255,255,.92);border-bottom:none}',
-  // 行卡片：白泡 + 悬浮反馈；整行点击跳会话（pointer-events 从容器 none 里单独放行）
-  '.dsh-pet-alert-row{pointer-events:auto;cursor:pointer;background:rgba(255,255,255,.92);color:#2b2b2b;' +
-    'border-radius:calc(var(--dsh-pet-size)*0.035);padding:calc(var(--dsh-pet-size)*0.018) calc(var(--dsh-pet-size)*0.028);' +
-    'box-shadow:0 calc(var(--dsh-pet-size)*0.009) calc(var(--dsh-pet-size)*0.035) rgba(0,0,0,.14),0 1px 3px rgba(0,0,0,.08);' +
-    'backdrop-filter:blur(6px);max-width:calc(var(--dsh-pet-size)*0.7);overflow:hidden;transition:background .15s ease}',
-  '.dsh-pet-alert-row:hover{background:rgba(255,255,255,.99)}',
-  // 会话标题/审批内容允许换行（碎碎念变体同款）：截断看不清，宁可多占一行也要读全
-  '.dsh-pet-alert-row .dsh-pet-alert-label{font-size:calc(var(--dsh-pet-size)*0.036);color:rgba(43,43,43,.62);' +
-    'white-space:normal;overflow-wrap:anywhere;margin-bottom:calc(var(--dsh-pet-size)*0.006)}',
-  '.dsh-pet-alert-row .dsh-pet-alert-text{font-size:calc(var(--dsh-pet-size)*0.0455);line-height:1.5;' +
-    'white-space:normal;overflow-wrap:anywhere}',
-  '.dsh-pet-alert-row .dsh-pet-alert-dot{color:#e53935;margin-right:calc(var(--dsh-pet-size)*0.012)}',
-  // 重启提醒变体：点色改蓝（审批红=有人在等你放行、更急；重启蓝=别忘，不阻塞任何事），
-  // 右侧留出 × 的位置，行内需要 relative 让 × 绝对定位
-  '.dsh-pet-alert-row[data-kind="restart"]{position:relative;padding-right:calc(var(--dsh-pet-size)*0.055)}',
-  '.dsh-pet-alert-row[data-kind="restart"] .dsh-pet-alert-dot{color:#1e88e5}',
-  // × 手动消除：只对重启提醒出现（审批有自己的处理面板，点卡片跳过去就行）
-  '.dsh-pet-alert-row .dsh-pet-alert-close{position:absolute;top:calc(var(--dsh-pet-size)*0.004);' +
-    'right:calc(var(--dsh-pet-size)*0.012);width:calc(var(--dsh-pet-size)*0.042);height:calc(var(--dsh-pet-size)*0.042);' +
-    'line-height:calc(var(--dsh-pet-size)*0.042);text-align:center;border-radius:50%;' +
-    'font-size:calc(var(--dsh-pet-size)*0.038);color:rgba(43,43,43,.38);cursor:pointer}',
-  '.dsh-pet-alert-row .dsh-pet-alert-close:hover{background:rgba(0,0,0,.07);color:rgba(43,43,43,.75)}',
-  // 重启折叠：紧凑标题行收紧上下 padding（一卡一行高），小字标题去掉下外边距
-  // （下面没有正文行了，保持垂直居中）。汇总行**不加粗**——软糖体没有真正的粗体
-  // 字形，font-weight 只会触发浏览器合成假粗体，糊成一团很出戏
-  '.dsh-pet-alert-row[data-fold="compact"]{padding-top:calc(var(--dsh-pet-size)*0.009);' +
-    'padding-bottom:calc(var(--dsh-pet-size)*0.009)}',
-  '.dsh-pet-alert-row[data-fold="compact"] .dsh-pet-alert-label{margin-bottom:0}',
-  // 汇总行右侧的展开/收起指示（▾/▴）：与 × 同位（汇总行没有 ×，不冲突）
-  '.dsh-pet-alert-row .dsh-pet-alert-foldmark{position:absolute;top:calc(var(--dsh-pet-size)*0.004);' +
-    'right:calc(var(--dsh-pet-size)*0.012);width:calc(var(--dsh-pet-size)*0.042);height:calc(var(--dsh-pet-size)*0.042);' +
-    'line-height:calc(var(--dsh-pet-size)*0.042);text-align:center;font-size:calc(var(--dsh-pet-size)*0.03);' +
-    'color:rgba(43,43,43,.38);pointer-events:none}',
-].join('\n');
+// 卡片样式来自 shared/alerts（与桌面端共用同一份：见该文件的「单一来源」说明）；
+// 这里只负责把它注入页面。样式内容一字未改（迁移时逐字节比对过）。
 
 /** 只注入一次 */
 function injectAlertCss(): void {
@@ -215,7 +135,7 @@ function injectAlertCss(): void {
   const tag = document.createElement('style');
   tag.dataset.plugin = 'dsh-pet';
   tag.dataset.pluginCss = 'dsh-pet/alerts';
-  tag.textContent = alertCss;
+  tag.textContent = ALERT_CSS;
   document.head.appendChild(tag);
 }
 
@@ -315,7 +235,7 @@ function renderAlerts(
     const { row, compact } = entry;
     const el = document.createElement('div');
     el.className = 'dsh-pet-alert-row';
-    el.dataset.kind = row.kind; // CSS 据此切点色 / 留 × 位置（见 alertCss）
+    el.dataset.kind = row.kind; // CSS 据此切点色 / 留 × 位置（见 shared/alerts 的 ALERT_CSS）
     if (compact) el.dataset.fold = 'compact';
     el.title = '切到会话：' + row.label;
     if (compact) {
@@ -360,27 +280,26 @@ function renderAlerts(
 /**
  * 启动跨会话提醒引擎（常驻，随插件 apply；signal 中止即拆除浮层并退订）。
  * 两路数据源相互独立、各自降级：
- *   - 审批/选择题：ctx 缺 uiSession.pendingInteractions / sessions.list 时只关这一路（告警一次）；
+ *   - 审批/选择题：依赖 host 的 /alerts 端点（1s 轮询）与 ctx.sessions.list（会话标题 +
+ *     当前会话过滤）；缺 sessions.list 时只关这一路（告警一次，标签退回会话 id 前 8 位）。
  *   - 重启提醒：只依赖 host 的 /restart-notice 端点，端点在就工作（不依赖 ctx 任何服务）。
  * 两路都不可用时才退化为"永远没有提醒行"（浮层保持隐藏，不影响宠物其余功能）。
  */
 export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
-  const uiSession = (ctx as { uiSession?: unknown } | null)?.uiSession as
-    | { pendingInteractions?: { getSnapshot?: () => unknown; subscribe?: (l: () => void) => (() => void) | void } }
-    | undefined;
+  const uiSession = (ctx as { uiSession?: unknown } | null)?.uiSession as UiSessionLike | undefined;
   const sessions = (ctx as { sessions?: unknown } | null)?.sessions as
     | {
         list?: { getSnapshot?: () => unknown; subscribe?: (l: () => void) => (() => void) | void };
         open?: (sessionId: string) => void;
       }
     | undefined;
-  const pendingSource = uiSession?.pendingInteractions;
   const listSource = sessions?.list;
-  // 审批路可用性：两个订阅源都在才算（缺任一个该路整体关掉，但重启提醒照常）
-  const approvalsAvailable = Boolean(pendingSource?.subscribe && listSource?.subscribe);
+  // 审批路可用性：sessions.list 在即可（标题与"当前会话"过滤靠它）；host /alerts 缺失时
+  // 轮询静默空转，与重启路同语义——host 两半服务同源，单开一半才罕见
+  const approvalsAvailable = Boolean(listSource?.subscribe);
   if (!approvalsAvailable) {
     console.warn(
-      '[dsh-pet] 跨会话审批提醒不可用：uiSession.pendingInteractions / sessions.list 缺失（重启提醒不受影响）',
+      '[dsh-pet] 跨会话审批提醒不可用：sessions.list 缺失（重启提醒不受影响）',
     );
   }
 
@@ -397,6 +316,9 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
 
   /** 重启提醒当前快照（由轮询回调更新） */
   let restartItems: RestartNoticeItem[] = [];
+
+  /** 审批/选择题当前快照（由 /alerts 轮询回调更新） */
+  let pendingItems: HostPendingItem[] = [];
 
   /** 重启折叠状态：true = 展开看完整理由（默认折叠；< RESTART_FOLD_MIN 张时计划层忽略它） */
   let restartExpanded = false;
@@ -424,15 +346,13 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
   }
 
   function render(): void {
-    const pending = approvalsAvailable
-      ? (pendingSource?.getSnapshot?.() as ReadonlyMap<string, PendingEntry> | undefined)
-      : undefined;
     const list = approvalsAvailable ? (listSource?.getSnapshot?.() as SessionListStateLike | undefined) : undefined;
     const shared = list ?? {};
+    const current = approvalsAvailable ? currentSessionId(uiSession) : '';
     // **行序**：重启块在前、审批行在后。浮层是「底边锚在宠物头顶」的弹性列（见 placeAlerts），
     // 只有最后一行贴着宠物——审批卡必须留在最底，否则会破坏已像素级调好的贴位。
     const restartRows = deriveRestartRows(restartItems, shared);
-    const approvalRows = deriveAlerts(pending ?? new Map(), shared);
+    const approvalRows = derivePendingRows(pendingItems, shared, current);
     const plan = planAlertRows(restartRows, approvalRows, restartExpanded);
     renderAlerts(root, plan, openSession, dismissRestart, toggleRestartFold);
     // 角标只数真实待处理条目（重启 + 审批）；折叠汇总行是导航，不计入
@@ -449,20 +369,24 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
     restartItems = items;
     render();
   }, signal);
+  // 审批/选择题轮询（1s，签名变化才回调重渲染）——host 端点缺失时静默空转，不影响重启路
+  const pendingPoll: PendingAlertsPoll = startPendingAlerts((items) => {
+    pendingItems = items;
+    render();
+  }, signal);
   // 跟随宠物移动/窗口变化：每拍重算浮层像素位置（宠物 root 出现前的空转无害）。
   // 同拍双向同步 data-dsh-pet-alerts：防订阅通知缺位导致隐藏属性卡死（气泡全哑的兜底）
   const posTimer = window.setInterval(() => {
     setPetBubblesHidden(!root.hidden);
     if (!root.hidden) placeAlerts(root);
   }, 500);
-  const disposePending = pendingSource?.subscribe?.(() => render());
   const disposeList = listSource?.subscribe?.(() => render());
   signal.addEventListener(
     'abort',
     () => {
-      disposePending?.();
       disposeList?.();
       restartPoll?.stop();
+      pendingPoll?.stop();
       window.clearInterval(posTimer);
       setPetBubblesHidden(false);
       root.remove();

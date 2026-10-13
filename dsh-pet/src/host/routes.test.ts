@@ -36,6 +36,14 @@ let dir = '';
 let call: (url: string) => Promise<Result> = () => Promise.reject(new Error('未初始化'));
 let savedHome: string | undefined;
 let savedElectron: string | undefined;
+/** apply() 订阅的 session/event 回调——**多个**（work-status、待交互提醒、通知帧各一个；
+ *  真实宿主把同一条事件派发给全部订阅者）。测 /alerts 就得像宿主那样逐个喂。 */
+type SessionEventListener = (session: unknown, event: unknown) => void;
+const sessionEvents: SessionEventListener[] = [];
+/** 把一条事件派发给全部订阅者（与宿主同语义） */
+const emit = (session: unknown, event: unknown): void => {
+  for (const cb of sessionEvents) cb(session, event);
+};
 
 /** 最小响应桩：writeHead 记状态码，Writable 收集 body（sendFile 经 pipe 写入） */
 class FakeRes extends Writable {
@@ -85,7 +93,10 @@ before(() => {
         /* 源码形态下内置配置不可达，refreshDesktop 会抛给调用方——这里吞掉，不影响路由注册 */
       }
     },
-    on: () => noop,
+    on: (name: string, cb: SessionEventListener) => {
+      if (name === 'session/event') sessionEvents.push(cb);
+      return noop;
+    },
     webServer: { register: (spec: { handler: typeof handler }) => ((handler = spec.handler), noop) },
     commands: { register: () => noop },
     logger: { warn: () => {}, info: () => {}, debug: () => {}, error: () => {} },
@@ -162,5 +173,85 @@ describe('thumb 路由 —— petId 不得当路径片段（PR #53 的不变式�
     const r = await call('/dsh-pet-7340/thumb/main/..%2F..%2F..%2Foutside%2Fleak.webm');
     assert.equal(r.status, 404);
     assert.equal(r.body.includes(SECRET), false);
+  });
+});
+
+// ---------- /alerts（桌面半侧提醒数据源）----------
+// 这一层测的是**接线**：事件 → 内存表 → 路由响应体。纯配对逻辑由 pending-alerts.test.ts 覆盖；
+// 这里要钉住的是"apply() 真的把 session/event 喂给了那张表、路由真的读它"——接线断了在界面上
+// 表现为"桌面端永远不弹提醒"，只有这条测试能提前发现。
+
+/** 会话桩：apply() 只从 header.id 取会话归属 */
+const sess = (id: string): { header: { id: string } } => ({ header: { id } });
+
+/** GET /alerts 并解析（响应体契约：{ ok, ts, restart[], pending[] }） */
+const alerts = async (): Promise<{
+  ok: boolean;
+  ts: number;
+  restart: Array<{ sessionId: string; reason: string }>;
+  pending: Array<{ kind: string; sessionId: string; label: string; text: string }>;
+}> => {
+  const r = await call('/dsh-pet-7340/alerts');
+  assert.equal(r.status, 200);
+  return JSON.parse(r.body) as never;
+};
+
+describe('/alerts —— 待交互提醒由 session/event 推导', () => {
+  test('apply() 订阅了 session/event（否则整套提醒无从谈起）', () => {
+    assert.ok(sessionEvents.length > 0, 'apply() 应订阅 session/event');
+  });
+
+  test('approval/asked 后能查到审批行，approval/decided 后消失', async () => {
+    // 表是 apply() 级别的常驻内存（真实运行就是这样），故断言只针对本用例自己的会话 id，
+    // 不假设全局为空——否则用例之间会互相污染（同文件多个用例共用一个 apply()）。
+    const mine = (body: Awaited<ReturnType<typeof alerts>>) => body.pending.filter((i) => i.sessionId === 'sess-a');
+    emit(sess('sess-a'), { type: 'approval/asked', data: { id: 'a1', toolName: 'Bash' } });
+    assert.deepEqual(
+      mine(await alerts()).map((i) => i.text),
+      ['等你审批 · Bash'],
+    );
+
+    emit(sess('sess-a'), { type: 'approval/decided', data: { id: 'a1', outcome: 'allow' } });
+    assert.deepEqual(mine(await alerts()), []);
+  });
+
+  test('ask_user_question 的待选择行：文案带首个问题，tool/result 按 callId 收尾', async () => {
+    emit(sess('sess-b'), {
+      type: 'tool/call',
+      data: {
+        callId: 'c1',
+        name: 'ask_user_question',
+        arguments: JSON.stringify({ questions: [{ question: '要不要删库？' }] }),
+      },
+    });
+    const mine = (body: Awaited<ReturnType<typeof alerts>>) => body.pending.filter((i) => i.sessionId === 'sess-b');
+    assert.deepEqual(
+      mine(await alerts()).map((i) => i.text),
+      ['等你选择 · 要不要删库？'],
+    );
+
+    emit(sess('sess-b'), {
+      type: 'tool/result',
+      data: { message: { content: [{ type: 'tool-result', toolCallId: 'c1', content: [] }] } },
+    });
+    assert.deepEqual(mine(await alerts()), []);
+  });
+
+  test('session/title 提供行标签；无标题退化为会话 id 前 8 位', async () => {
+    emit(sess('abcdef1234567890'), { type: 'approval/asked', data: { id: 'b1', toolName: 'Write' } });
+    emit(sess('abcdef1234567890'), { type: 'session/title', data: { title: '修桌面端尺寸' } });
+    const body = await alerts();
+    assert.deepEqual(
+      body.pending.filter((i) => i.sessionId === 'abcdef1234567890').map((i) => i.label),
+      ['修桌面端尺寸'],
+    );
+  });
+
+  test('响应体恒带两组数组（轮询端按数组长度判断，缺字段会当成"没有提醒"）', async () => {
+    const body = await alerts();
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.pending));
+    assert.ok(Array.isArray(body.restart));
+    assert.equal(typeof body.ts, 'number');
   });
 });

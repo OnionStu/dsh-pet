@@ -299,6 +299,30 @@ function startLoops() {
   // 命令触发气泡：每只宠物独立 1s 轻轮询（startBroadcastLoop）——/chat 命令写入即展示
   for (const s of sprites) s.startBroadcastLoop();
 
+  // 提醒卡（审批/选择/计划评审/重启提醒）：容器级 1s 轮询 /alerts，**只在主宠物窗口**渲染
+  // （与浏览器浮层同语义：那边也是只读主宠物 .dsh-pet-root 的 rect）。行集合变化才重渲染。
+  // 桌面专属能力：浏览器有自己的一套（client/approvals.ts，数据源是网页 ctx 的 pendingInteractions），
+  // 桌面拿不到那份状态，只能由 host 从 DSH 事件表推导后经 /alerts 提供（见 src/host/pending-alerts.ts）。
+  {
+    const card = sprites.find((s) => s.alertCard);
+    if (card) {
+      const alertsLoop = async () => {
+        try {
+          const res = await fetch(ALERTS_URL, { cache: 'no-store' });
+          if (res.ok) {
+            const payload = await res.json().catch(() => null);
+            if (payload && typeof payload === 'object') card.onAlertsTick(payload);
+          }
+        } catch (e) {
+          // 轮询失败静默（下一拍再试）：提醒是增强能力，不该在控制台刷错误
+          void e;
+        }
+        setTimeout(() => void alertsLoop(), 1000);
+      };
+      void alertsLoop();
+    }
+  }
+
   // 手动 /balance 触发：1s 轻量轮询触发计数（端点已禁止缓存），计数变化且余额启用时立即刷新余额并递增 tick
   let triggerBaseline = null;
   const triggerLoop = async () => {

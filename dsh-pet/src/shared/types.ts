@@ -134,6 +134,8 @@ export interface ClientConfig {
   notificationsEnabled: boolean;
   /** 重启提醒总开关：true=agent 调 notify_restart_required 时宠物头顶弹「需要重启 DSH」提醒卡；缺失即配置错误 */
   restartNoticeEnabled: boolean;
+  /** 其它应用全屏时让位开关：仅 macOS 生效，浏览器全屏不算其它应用；缺失即配置错误 */
+  hideOnOtherAppFullscreen: boolean;
   /** 碎碎念配图开关：true=碎碎念每次从表情包池随机抽 1 张连同文本显示（碎碎念无上下文，故随机） */
   whisperImageEnabled: boolean;
   /** 对话配图开关：true=对话时把表情包清单交模型按语境选 1 张（可不选）；false=纯文本 */

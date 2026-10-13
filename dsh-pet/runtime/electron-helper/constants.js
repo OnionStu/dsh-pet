@@ -124,7 +124,8 @@ const BASE = BRIDGE ? 'dsh-pet-bridge://dsh-pet/dsh-pet-7340' : ORIGIN + '/dsh-p
 const BALANCE_URL = BASE + '/balance';
 const TRIGGER_URL = BASE + '/balance/trigger';
 const WHISPER_URL = BASE + '/whisper';
-const WORK_STATUS_URL = BASE + '/work-status'; // 工作状态联动：1s 轮询，ts 变化才触发（与浏览器同一端点）
+const WORK_STATUS_URL = BASE + '/work-status';
+const ALERTS_URL = BASE + '/alerts'; // 提醒卡（审批/选择/计划评审/重启提醒）：1s 轮询，ts 变化才重渲染（与 work-status 同族）
 const BUBBLE_DURATION_MS = 10 * 1000; // 余额/碎碎念气泡展示时长（与浏览器一致：定时自动消失，与动画解耦）
 // 窗口四周外扩 = 该比例 × 宠物尺寸：为气泡 / 未来可能的弹窗预留显示空间；
 // 外扩区透明且点击穿透（只有身体命中区可交互）。单点可调——按实际观感改这里。

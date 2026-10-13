@@ -56,6 +56,35 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // 提醒卡夹具（桌面端 /alerts 端到端自测用）：一条重启提醒 + 一条待审批。
+  // 真宿主由 src/host/pending-alerts.ts 从 DSH 事件表推导，这里只是固定形状的假数据。
+  if (pathname === '/dsh-pet-7340/alerts') {
+    sendJson(res, 200, {
+      ok: true,
+      ts: Date.now(),
+      restart: [
+        { sessionId: 'mock-restart-1', reason: '改了 runtime/electron-helper/main.js，需要你重启宿主', ts: Date.now() },
+      ],
+      pending: [
+        {
+          kind: 'approval',
+          sessionId: 'mock-session-abcdef123456',
+          label: 'mock 会话：等审批',
+          text: '等你审批 · Bash',
+          ts: Date.now(),
+        },
+        {
+          kind: 'question',
+          sessionId: 'mock-session-2',
+          label: 'mock 会话：等选择',
+          text: '等你选择 · 要不要删库？',
+          ts: Date.now(),
+        },
+      ],
+    });
+    return;
+  }
+
   if (pathname === '/dsh-pet-7340/balance/trigger') {
     sendJson(res, 200, { count: 0 });
     return;
