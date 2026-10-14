@@ -1063,6 +1063,9 @@ export function apply(ctx: any): void {
           ),
           restart: restart.map((item) => ({
             sessionId: item.sessionId,
+            // 重启提醒也带会话标签（与 pending 行同源）：桌面半侧没有 sessions.list，
+            // 浏览器能显示真标题而桌面退化成 id 前缀，差距就出在这里
+            label: pendingAlerts.titleOf(item.sessionId) ?? item.sessionId.slice(0, 8),
             reason: item.reason,
             ts: item.ts,
           })),

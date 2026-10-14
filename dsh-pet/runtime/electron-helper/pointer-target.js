@@ -22,20 +22,25 @@ const STAGE_W = 640;
 
 /**
  * 窗口矩形 → 宠物身体命中区的屏幕矩形（DIP）。
- * 窗口 = 宠物包围盒 + 四周各半只宠物的余量（renderer 的 WINDOW_MARGIN_RATIO = 0.5）：
+ * 窗口 = 宠物包围盒 + 四周外扩余量（renderer 的 WINDOW_MARGIN_RATIO = 0.5）：
  * 横向 `margin = round(width / 4)`、stageW = width − 2×margin；纵向从窗口顶边往下 margin 才是画布顶边
  * （底部还多一个 bottomPad，命中区计算用不到）。判定公式与渲染端 sprite.js 的命中判定同源，
  * 故两条通道的判定区域严格一致（报告者补丁里用 width/4 内缩会覆盖整个画布，比身体大一倍多）。
+ *
+ * topMargin（可选）：提醒卡超高时渲染端会把窗口**向上加高**（顶部余量 > 其余三边，
+ * 见 sprite.js syncAlertCardSpace），此时四边等余量的假设不再成立，顶部余量由渲染端经
+ * set-bounds 实报（marginT，屏幕像素）；缺省/非法时回退 width/4（未加高的旧行为）。
  */
-function spriteHitRect(bounds) {
+function spriteHitRect(bounds, topMargin) {
   const margin = Math.round(bounds.width / 4);
   const stageW = bounds.width - margin * 2;
   const stageH = (stageW * CANVAS_H) / STAGE_W;
+  const top = Number.isFinite(topMargin) && topMargin > 0 ? topMargin : margin;
   return {
     left: bounds.x + margin + (HIT_BOX.x0 / STAGE_W) * stageW,
-    top: bounds.y + margin + (HIT_BOX.y0 / CANVAS_H) * stageH,
+    top: bounds.y + top + (HIT_BOX.y0 / CANVAS_H) * stageH,
     right: bounds.x + margin + (HIT_BOX.x1 / STAGE_W) * stageW,
-    bottom: bounds.y + margin + (HIT_BOX.y1 / CANVAS_H) * stageH,
+    bottom: bounds.y + top + (HIT_BOX.y1 / CANVAS_H) * stageH,
   };
 }
 
@@ -52,16 +57,17 @@ const OFF_BODY_RELEASE_MS = 400;
  *
  * @param {{x:number,y:number,width:number,height:number}} bounds 窗口矩形（DIP）
  * @param {{x:number,y:number}} point 真实光标位置（DIP）
+ * @param {number} [topMargin] 顶部余量（提醒卡加高窗口时由渲染端实报；缺省按四边等余量估算）
  * @returns {'outside'|'body'|'margin'} 分区
  */
-function pointerZone(bounds, point) {
+function pointerZone(bounds, point, topMargin) {
   const inWindow =
     point.x >= bounds.x &&
     point.x < bounds.x + bounds.width &&
     point.y >= bounds.y &&
     point.y < bounds.y + bounds.height;
   if (!inWindow) return 'outside';
-  const r = spriteHitRect(bounds);
+  const r = spriteHitRect(bounds, topMargin);
   const inSprite = point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom;
   return inSprite ? 'body' : 'margin';
 }
@@ -92,11 +98,12 @@ function pointerZone(bounds, point) {
  *   渲染端那条通道也在翻转它，本地副本会与之失步）
  * @param {boolean} busy 渲染端是否正在用这个窗口的鼠标输入（拖拽中/菜单开/弹窗开，见 inputBusy）
  * @param {number} [offBodyMs=0] 光标在窗口余量区（非 busy）的连续停留时长，超时即恢复穿透
+ * @param {number} [topMargin] 顶部余量（提醒卡加高窗口时渲染端实报；缺省按四边等余量估算）
  * @returns {boolean} 新的穿透状态
  */
-function decideWindowIgnore(bounds, point, ignoring, busy, offBodyMs = 0) {
+function decideWindowIgnore(bounds, point, ignoring, busy, offBodyMs = 0, topMargin) {
   if (busy) return false; // 输入租约期内保持可交互
-  const zone = pointerZone(bounds, point);
+  const zone = pointerZone(bounds, point, topMargin);
   if (zone === 'outside') return true; // 窗外：恢复穿透
   if (zone === 'body') return false; // 宠物身上：可交互
   if (offBodyMs >= OFF_BODY_RELEASE_MS) return true; // 余量区停留超时：恢复穿透

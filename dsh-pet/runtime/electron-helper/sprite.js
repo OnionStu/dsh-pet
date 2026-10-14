@@ -37,10 +37,12 @@ class PetSprite {
     this.sideAllow = (S.HIT_BOX.x0 / 640) * this.size;
     window.__dshPetDebug.sideAllow = this.sideAllow;
     // 窗口四周外扩（= WINDOW_MARGIN_RATIO×宠物尺寸）：sprite 钉在 (margin.l, margin.t)，
-    // 窗口 = sprite + 四边余量——气泡/未来弹窗显示在余量里；余量透明且点击穿透
+    // 窗口 = sprite + 四边余量——气泡/未来弹窗显示在余量里；余量透明且点击穿透。
+    // margin.t 是**动态**的：提醒卡超高时窗口整体向上加高（见 syncAlertCardSpace）
     const m = this.size * WINDOW_MARGIN_RATIO;
     this.margin = { t: m, r: m, b: m, l: m };
     window.__dshPetDebug.winMargin = this.margin;
+    this._alertMaxH = 0; // 上次写给提醒卡的封顶高度（去重用，0 = 未写过）
     // 宠物包围盒左上角在【工作区】坐标系里的位置（本窗口的位置 = 宠物的位置）
     this.pos = { x: 0, y: 0 };
 
@@ -172,6 +174,8 @@ class PetSprite {
             size: this.size,
             onOpenSession: (id) => this.openSessionInBrowser(id),
             onDismiss: (id) => this.dismissRestartNotice(id),
+            // 折叠/展开会改自然高度：空闲时立刻重算窗口余量（移动中由下一帧 sendBounds 自然带上）
+            onNaturalHeight: () => this.respaceForAlerts(),
           })
         : null;
     this.alertSig = ''; // 上一次渲染的行签名（变化才重渲染）
@@ -265,6 +269,7 @@ class PetSprite {
   sendBounds(px, py) {
     this.pos = { x: Math.round(px), y: Math.round(py) };
     window.__dshPetDebug.dragPos = { x: this.pos.x, y: this.pos.y };
+    this.syncAlertCardSpace(); // 提醒卡超高：窗口向上加高（改顶部余量，pos 不变 → 宠物原地不动）
     if (window.petBridge) {
       // 完整状态一次捎带：size/bottomPad 让静止宠物从首帧起就登记进碰撞站场
       // （此前只有 report-flight 带尺寸，从没飞过的宠物 size=0 被碰撞检测直接跳过）；
@@ -281,6 +286,7 @@ class PetSprite {
         toScreen(this.bottomPad),
         fly ? toScreen(fly.vx) : 0,
         fly ? toScreen(fly.vy) : 0,
+        toScreen(this.margin.t), // 顶部余量实报：兜底命中判定据此精确换算身体命中区
       );
     }
     // 位置变了（宠物漫游/拖拽/飞行，窗口跟着动）：提示若正显示必须重摆一次——它跟的是光标，
@@ -342,6 +348,7 @@ class PetSprite {
     if (p.x !== cx || p.y !== cy) {
       this.customPos = { rx: p.x / VIEW.w, ry: p.y / VIEW.h };
     }
+    this.syncAlertCardSpace(); // 工作区变了（分辨率/缩放/插拔屏）：加高上限随之重夹
     this.position();
   }
 
@@ -1300,6 +1307,56 @@ class PetSprite {
   // ---- 提醒卡（审批/选择/计划评审/重启提醒，主宠物窗口专属；数据来自 host /alerts）----
 
   /**
+   * 提醒卡空间同步：卡片自然高度超出默认顶部余量（0.5×size）时，把整个窗口**向上加高**——
+   * margin.t 加大、窗口顶边随之上移，宠物包围盒位置（this.pos）不变，屏幕上宠物原地不动。
+   *
+   * 几何：卡片底边锚在宠物头顶（bottom: calc(100% - size*0.108)，探入盒顶 0.108×size），
+   * 卡片从锚点向上长。要不贴窗口顶边，需 margin.t ≥ 自然高 − 探入量 + 呼吸位。
+   * 夹取：窗口顶不越过宠物所在屏的工作区顶边（再往上长也会被屏幕裁掉，白加高）；
+   * 装不下时容器按实际余量封顶（--dsh-pet-alert-max-h），超高部分内部滚动兜底。
+   *
+   * 调用点：sendBounds 每帧（漫游/拖拽/飞行中自然跟随）+ respaceForAlerts（行集合变化、
+   * 折叠/展开、显示器重排）。纯函数式：读的自然高度是 update() 时缓存的，不逐帧量 DOM。
+   */
+  syncAlertCardSpace() {
+    const card = this.alertCard;
+    if (!card) return;
+    const base = this.size * WINDOW_MARGIN_RATIO;
+    const probe = this.size * 0.108; // 卡片底边探入宠物盒顶的比例（index.html 的 bottom 公式）
+    const gap = this.size * 0.02; // 顶部呼吸位：卡片贴窗沿很难看，阴影也会被裁
+    let top = base;
+    if (card.isVisible()) {
+      const natural = card.naturalHeight();
+      if (natural > 0) {
+        top = Math.max(base, natural - probe + gap);
+        // 窗口顶 = pos.y - margin.t（视口坐标）：不低于所在屏工作区顶边
+        const area = S.resolveRect(AREAS, this.pos.x + this.halfW, this.pos.y + this.halfH);
+        if (area) top = Math.min(top, Math.max(base, this.pos.y - area.y));
+      }
+    }
+    if (top !== this.margin.t) {
+      this.margin.t = top;
+      this.el.style.top = top + 'px'; // sprite 在窗口内的钉位随余量走（宠物屏幕位置不变）
+    }
+    // 封顶 = 余量实际能容纳的高度：余量够则 ≥ 自然高（不滚），不够则滚动兜底
+    const cap = Math.max(this.size * 0.2, top + probe - gap);
+    if (cap !== this._alertMaxH) {
+      this._alertMaxH = cap;
+      card.setMaxHeight(cap);
+    }
+  }
+
+  /**
+   * 行集合变化后的空间重算：空闲时立刻重新上报窗口矩形（卡片当场加高/还原）；
+   * 拖拽/抛掷/漫游中不主动 position()（会把宠物拉回旧落点，同 renderer 的 resize 守卫），
+   * 由下一帧 sendBounds 里的 syncAlertCardSpace 自然带上新余量。
+   */
+  respaceForAlerts() {
+    if (this.dragState.active || this.throwRef !== null || this.moveRef !== null) return;
+    this.position();
+  }
+
+  /**
    * 一拍提醒数据：派生行 → 变化才重渲染（行模型与样式都来自 shared，本方法只管挂载与状态）。
    */
   onAlertsTick(payload) {
@@ -1323,6 +1380,8 @@ class PetSprite {
     else this.el.removeAttribute('data-pet-alerts');
     window.__dshPetDebug.alertRows = rows.length;
     this.renderBubble();
+    // 卡片高度变了 → 窗口余量跟着变（空闲立刻生效；移动中由下一帧 sendBounds 带上）
+    this.respaceForAlerts();
   }
 
   /** 行点击 → 用系统默认浏览器打开 GUI 并直达该会话（网页半侧读 ?dsh-pet-session 调 sessions.open） */

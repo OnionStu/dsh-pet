@@ -63,6 +63,13 @@ describe('alertRowsFromPayload —— 行顺序与形状', () => {
     );
   });
 
+  test('重启行用 host 带的会话标题（host /alerts 已把标题 join 进 restart 条目）', () => {
+    const rows = alertRowsFromPayload(
+      payload([{ sessionId: 'abcdef1234567890', label: '阅读升级计划', reason: 'x' }], []),
+    );
+    assert.equal(rows[0]?.label, '阅读升级计划');
+  });
+
   test('未知 kind 归入 question（新增类型不该让行消失）', () => {
     const rows = alertRowsFromPayload(payload([], [{ kind: 'plan-review', sessionId: 's1', text: '等你评审计划' }]));
     assert.equal(rows[0]?.kind, 'plan-review');

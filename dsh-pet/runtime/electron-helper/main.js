@@ -292,6 +292,11 @@ const windows = new Map();
 /** win.id -> 上一次**请求**的内容区矩形（"x,y,w,h"）：pet:set-bounds 的去重基准，见那里的注释 */
 const lastRequestedBounds = new Map();
 
+/** win.id -> 当前顶部余量（屏幕像素）：提醒卡加高窗口时渲染端实报（pet:set-bounds 的 marginT）。
+ *  兜底命中判定（pointer-target）拿它换算身体命中区——加高期间四边等余量的 width/4 估算会把
+ *  加高区误算进身体，光标在窗口上沿之外仍被判成 body 而不穿透 */
+const winTopMargin = new Map();
+
 /**
  * 宠物间碰撞 broker 状态：petId -> { x, y, vx, vy, size, bottomPad }。
  * 来源：pet:set-bounds（位置+尺寸+速度，随漫游/拖拽/静止保真上报，每帧一次）+
@@ -598,10 +603,10 @@ function createPetWindows() {
       const busy = inputBusy.get(win.id) === true;
       const point = screen.getCursorScreenPoint();
       // 余量区停留计时：只在"非 busy 且在余量区"时累加，离开余量区即清零；busy 期间不累加。
-      const zone = pointerZone(b, point);
+      const zone = pointerZone(b, point, winTopMargin.get(win.id));
       const nextMs = !busy && zone === 'margin' ? (offBodyMs.get(win.id) ?? 0) + POINTER_POLL_MS : 0;
       offBodyMs.set(win.id, nextMs);
-      const next = decideWindowIgnore(b, point, ignoring, busy, nextMs);
+      const next = decideWindowIgnore(b, point, ignoring, busy, nextMs, winTopMargin.get(win.id));
       if (next !== ignoring) setWindowIgnore(win, next);
     }, POINTER_POLL_MS);
     // [置顶看门狗] 建窗时那次 setAlwaysOnTop 之后再没人复查过：外部任何一次 z 序扰动都能让桌宠
@@ -628,6 +633,7 @@ function createPetWindows() {
       clearInterval(topmostTimer);
       windows.delete(pet.id);
       lastRequestedBounds.delete(win.id);
+      winTopMargin.delete(win.id);
       windowIgnore.delete(win.id);
       inputBusy.delete(win.id);
       offBodyMs.delete(win.id);
@@ -815,6 +821,10 @@ app.whenReady().then(() => {
       lastRequestedBounds.set(win.id, key);
       win.setContentBounds(rect, false);
     }
+    // 顶部余量实报（提醒卡加高窗口时 > 默认半只宠物宽）：兜底命中判定用它精确换算，
+    // 不再按四边等余量估算（见 pointer-target.js spriteHitRect 的 topMargin 参数）
+    const marginT = Number(bounds?.marginT);
+    winTopMargin.set(win.id, Number.isFinite(marginT) && marginT > 0 ? marginT : Math.round(width / 4));
     // 碰撞站场：位置必须用**包围盒左上角**（renderer 显式上报 boxX/boxY）——
     // 窗口坐标 = 包围盒 − margin（半只宠物宽），直接拿窗口坐标会让跨窗检测整体错位
     const petId = [...windows.keys()].find((id) => windows.get(id) === win);

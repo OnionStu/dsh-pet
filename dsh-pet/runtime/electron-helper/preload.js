@@ -5,6 +5,9 @@
 //     差半只宠物宽，会让跨窗碰撞检测整体错位）。
 //     size/bottomPad = 碰撞站场登记用（静止宠物只发 set-bounds，靠它带上尺寸才能被其它
 //     飞行宠物撞到）；vx/vy = 当前速度（飞行中实时值，静止/拖拽 = 0）。
+//     marginT = 当前顶部余量（提醒卡超高时窗口向上加高，顶部余量 > 其余三边；见 sprite.js
+//     syncAlertCardSpace）——主进程兜底命中判定用它精确换算身体命中区，不再按「四边余量相等」
+//     从 width/4 估算（窗口加高后估算会把整个加高区误算成身体，漏穿透窗口外光标）。
 //   - setInteractive：点击穿透翻转——窗口默认整窗穿透（透明像素不挡下层应用），
 //     renderer 在光标进/出宠物身体命中区时上报，主进程 setIgnoreMouseEvents 翻转。
 //   - setInputBusy：**我正在用这个窗口的鼠标输入**（拖拽中 / 菜单开着 / 对话弹窗开着），
@@ -20,8 +23,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('petBridge', {
-  setBounds(x, y, width, height, boxX, boxY, size, bottomPad, vx, vy) {
-    ipcRenderer.send('pet:set-bounds', { x, y, width, height, boxX, boxY, size, bottomPad, vx, vy });
+  setBounds(x, y, width, height, boxX, boxY, size, bottomPad, vx, vy, marginT) {
+    ipcRenderer.send('pet:set-bounds', { x, y, width, height, boxX, boxY, size, bottomPad, vx, vy, marginT });
   },
   setInteractive(interactive) {
     ipcRenderer.send('pet:set-interactive', !!interactive);

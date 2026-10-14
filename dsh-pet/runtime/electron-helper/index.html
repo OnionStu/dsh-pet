@@ -141,9 +141,9 @@
         left: 50%;
         transform: translateX(-50%);
         bottom: calc(100% - var(--pet-size, 462px) * 0.108);
-        /* 窗口上沿只有 0.5×size 的余量：卡片超了会被窗口裁掉，故封顶 + 可滚（滚动条藏起来，
-           透明窗上一条灰条很出戏；行数通常个位数，滚动是兜底） */
-        max-height: calc(var(--pet-size, 462px) * 0.58);
+        /* 高度上限由 sprite 按内容现算（--dsh-pet-alert-max-h，含窗口随卡片向上加高的量）；
+           缺省值只是首帧/未同步时的兜底。超过上限可滚（滚动条藏起来，透明窗上一条灰条很出戏） */
+        max-height: var(--dsh-pet-alert-max-h, calc(var(--pet-size, 462px) * 0.58));
         overflow-y: auto;
         scrollbar-width: none;
       }

@@ -188,6 +188,14 @@ describe('会话标题与排序', () => {
     );
   });
 
+  test('titleOf 单查标题（/alerts 给重启提醒行补 label 用）；无记录返回 undefined', () => {
+    const store = createPendingAlerts();
+    assert.equal(store.titleOf('s1'), undefined);
+    store.observe('s1', title('修桌面端尺寸'));
+    assert.equal(store.titleOf('s1'), '修桌面端尺寸');
+    assert.equal(store.titleOf('别的会话'), undefined);
+  });
+
   test('按入表时刻升序（最早的在最上），snapshot.ts 随变化推进', () => {
     const store = createPendingAlerts();
     store.observe('s1', asked('a1', 'Bash'));

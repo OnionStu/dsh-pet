@@ -51,6 +51,10 @@ const emit = (session: unknown, event: unknown): void => {
 };
 /** apply() 注册的全部 effect 释放函数（after 里调用：否则常驻定时器会让测试进程不退出） */
 const disposers: Array<() => void> = [];
+/** apply() 注册的重启提醒工具定义（/alerts 的 restart 行用例经它往内存表里写一条提醒） */
+let restartTool:
+  | { execute: (args: unknown, exec: { agent: { id: string } }) => Promise<{ ok: boolean; noticedAt: number }> }
+  | undefined;
 
 /** 最小响应桩：writeHead 记状态码，Writable 收集 body（sendFile 经 pipe 写入） */
 class FakeRes extends Writable {
@@ -117,8 +121,14 @@ before(() => {
       if (name === 'session/event') sessionEvents.push(cb);
       return noop;
     },
-    // 重启提醒工具：软取的服务面（缺 register 时插件只降级该能力，见 index.ts）
-    tools: { register: () => noop },
+    // 重启提醒工具：软取的服务面（缺 register 时插件只降级该能力，见 index.ts）。
+    // 捕获注册的工具定义，供 /alerts 的 restart 行用例直接 execute 一条提醒进内存表
+    tools: {
+      register: (def: unknown) => {
+        restartTool = def as typeof restartTool;
+        return noop;
+      },
+    },
     webServer: { register: (spec: { handler: typeof handler }) => ((handler = spec.handler), noop) },
     commands: { register: () => noop },
     logger: { warn: () => {}, info: () => {}, debug: () => {}, error: () => {} },
@@ -483,7 +493,7 @@ const sess = (id: string): { header: { id: string } } => ({ header: { id } });
 const alerts = async (): Promise<{
   ok: boolean;
   ts: number;
-  restart: Array<{ sessionId: string; reason: string }>;
+  restart: Array<{ sessionId: string; label: string; reason: string }>;
   pending: Array<{ kind: string; sessionId: string; label: string; text: string }>;
 }> => {
   const r = await call('/dsh-pet-7340/alerts');
@@ -540,6 +550,18 @@ describe('/alerts —— 待交互提醒由 session/event 推导', () => {
       body.pending.filter((i) => i.sessionId === 'abcdef1234567890').map((i) => i.label),
       ['修桌面端尺寸'],
     );
+  });
+
+  test('restart 行也带会话标签（桌面半侧没有 sessions.list，标题只能由 host 补）', async () => {
+    assert.ok(restartTool, 'apply() 应注册 notify_restart_required 工具');
+    emit(sess('sess-restart-titled'), { type: 'session/title', data: { title: '重启前的会话' } });
+    await restartTool!.execute({ reason: '改了 host 代码' }, { agent: { id: 'sess-restart-titled' } });
+    await restartTool!.execute({ reason: '又改了一处' }, { agent: { id: 'sess-restart-plain' } });
+    const mine = (await alerts()).restart.filter((i) => i.sessionId.startsWith('sess-restart-'));
+    // 同毫秒入表时排序按 sessionId 字典序兜底（见 restart-notice 的 snapshot），断言不依赖入表顺序
+    const byLabel = new Map(mine.map((i) => [i.sessionId, i.label]));
+    assert.equal(byLabel.get('sess-restart-titled'), '重启前的会话');
+    assert.equal(byLabel.get('sess-restart-plain'), 'sess-res'); // 无标题：退化为会话 id 前 8 位
   });
 
   test('响应体恒带两组数组（轮询端按数组长度判断，缺字段会当成"没有提醒"）', async () => {

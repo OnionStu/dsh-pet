@@ -106,6 +106,8 @@ export function pendingAlertText(entry: Pick<PendingAlertEntry, 'kind' | 'detail
 export function createPendingAlerts(): {
   observe(sessionId: string, event: unknown): void;
   snapshot(): PendingAlertSnapshot;
+  /** 标题查询（/alerts 给重启提醒行补 label 用）：没有记录返回 undefined（调用方自行兜底） */
+  titleOf(sessionId: string): string | undefined;
 } {
   const table = new Map<string, PendingAlertEntry>();
   const titles = new Map<string, string>();
@@ -201,6 +203,11 @@ export function createPendingAlerts(): {
           return { kind: entry.kind, sessionId: entry.sessionId, label, text: pendingAlertText(entry), ts: entry.ts };
         });
       return { ts: changedAt, items };
+    },
+
+    /** 标题查询：仅覆盖宿主本次启动之后发过 session/title 的会话（见文件头），无记录返回 undefined */
+    titleOf(sessionId: string): string | undefined {
+      return titles.get(sessionId);
     },
   };
 }

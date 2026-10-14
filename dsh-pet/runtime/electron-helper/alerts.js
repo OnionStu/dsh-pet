@@ -10,10 +10,10 @@
  * 与浏览器浮层的差异（刻意的，都是为了适配"窗口就是宠物+余量"这个前提）：
  *   - 定位：浏览器是 body 级 fixed 浮层 + 逐帧读宠物 rect 算像素；桌面直接绝对定位在宠物盒内，
  *     底边锚点与碎碎念/余额气泡**同一行公式**（`bottom: calc(100% - size*0.108)`），无需逐帧 JS。
- *   - 高度上限：窗口上沿只有 0.5×size 的余量，卡片超了会被窗口裁掉 → CSS 里 max-height 封顶 +
- *     可滚动（滚动条隐藏，避免在透明窗上出现一条灰条）。
- *   - 无折叠汇总：浏览器那套「重启提醒 ≥2 条折成汇总行」是为了不刷屏；桌面卡片本来就在
- *     窗口内、空间有限且行数通常个位数，直接列全更直白（要折叠再加）。
+ *   - 高度上限：卡片自然高度超过窗口顶部余量时，sprite 会把窗口整体向上加高（margin.t 动态化），
+ *     装不下（宠物已贴屏幕顶）才退回容器内滚动（max-height 封顶，滚动条隐藏，避免透明窗上一条灰条）。
+ *   - 重启折叠：重启提醒 ≥2 条时折成「汇总行 + 紧凑标题行」（与浏览器 planAlertRows 同规则），
+ *     点汇总行展开看完整理由。
  *   - 点击跳转：桌面没有"切会话"的客户端 API，改为用系统浏览器打开带 `?dsh-pet-session=<id>`
  *     的 GUI 地址，由网页里的宠物 client 半侧读这个参数调 sessions.open（见 client/app.ts）。
  *
@@ -118,6 +118,9 @@ function createAlertCard(opts) {
     root.replaceChildren();
     if (list.length === 0) {
       root.hidden = true;
+      naturalH = 0;
+      // 卡片清空：窗口还原默认余量（同样要通知，否则窗口停在加高状态）
+      if (typeof opts.onNaturalHeight === 'function') opts.onNaturalHeight();
       return;
     }
     // 行序：重启块在前、待交互行在后（与 alertRowsFromPayload 一致）；重启行达阈值才折叠
@@ -129,10 +132,25 @@ function createAlertCard(opts) {
     for (const row of restartRows) root.appendChild(buildRow(row, compact));
     for (const row of pendingRows) root.appendChild(buildRow(row, false));
     root.hidden = false;
+    // 自然高度在渲染后现量：scrollHeight 不受 max-height 封顶影响，sprite 拿它决定窗口加高多少
+    naturalH = root.scrollHeight;
+    // 通知窗口重算余量（折叠/展开也走这条：卡片收起/展开后窗口当场缩/长）
+    if (typeof opts.onNaturalHeight === 'function') opts.onNaturalHeight();
   };
+  /** 最近一次渲染的自然高度（px，窗口局部 CSS 系；隐藏时为 0） */
+  let naturalH = 0;
 
   return {
     update,
+    /** 卡片的自然内容高度（max-height 封顶前的完整高度） */
+    naturalHeight() {
+      return naturalH;
+    },
+    /** 封顶高度（px，写入 --dsh-pet-alert-max-h）；<= 0 时移除，回退 CSS 默认上限 */
+    setMaxHeight(px) {
+      if (px > 0) root.style.setProperty('--dsh-pet-alert-max-h', px + 'px');
+      else root.style.removeProperty('--dsh-pet-alert-max-h');
+    },
     /** 光标是否落在卡片上（窗口局部坐标，CSS 系）——命中判定用它把整窗可交互范围扩到卡片 */
     containsPoint(x, y) {
       if (root.hidden) return false;

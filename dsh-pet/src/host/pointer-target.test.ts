@@ -190,6 +190,25 @@ describe('spriteHitRect —— 与渲染端命中判定同源（否则两条通�
     assert.ok(r.left > 150 && r.left < 300);
     assert.ok(r.right > 300 && r.right < 450);
   });
+
+  test('顶部余量实报（提醒卡加高窗口）：命中区随之下移，加高区不误判成身体', () => {
+    // 窗口向上加高 200px：width 不变（左右余量仍是 width/4），命中区顶边 = bounds.y + marginT
+    const grown = { x: bounds.x, y: bounds.y - 200, width: bounds.width, height: bounds.height + 200 };
+    const plain = spriteHitRect(grown); // 不传 marginT：旧估算把整个加高区都算进身体（回归前的错）
+    const exact = spriteHitRect(grown, 200 + Math.round(grown.width / 4));
+    // 实报版命中区 = 未加高窗口的命中区（宠物本身没动，只是窗口顶边向上走了 200px）
+    const r0 = spriteHitRect(bounds);
+    assert.ok(Math.abs(exact.top - r0.top) < 0.01, 'top=' + exact.top);
+    assert.ok(Math.abs(exact.bottom - r0.bottom) < 0.01, 'bottom=' + exact.bottom);
+    assert.ok(exact.top > plain.top, '实报的命中区必须比旧估算低（加高区是提醒卡不是身体）');
+    // 加高区（窗口上半部、宠物身体上方）里的光标：实报判 margin，旧估算会误判 body
+    const inGrownHead = { x: grown.x + grown.width / 2, y: bounds.y - 100 };
+    assert.equal(pointerZone(grown, inGrownHead, 200 + Math.round(grown.width / 4)), 'margin');
+    // 身体中心：两种算法都仍是 body
+    const center = { x: (exact.left + exact.right) / 2, y: (exact.top + exact.bottom) / 2 };
+    assert.equal(pointerZone(grown, center, 200 + Math.round(grown.width / 4)), 'body');
+    assert.equal(decideWindowIgnore(grown, inGrownHead, true, false, 0, 200 + Math.round(grown.width / 4)), true);
+  });
 });
 
 describe('源码守卫 —— helper 的两个兜底必须在位', () => {

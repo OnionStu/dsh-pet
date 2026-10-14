@@ -69,14 +69,15 @@ export function alertRowsFromPayload(payload: unknown): AlertRow[] {
   const rows: AlertRow[] = [];
   const restart = Array.isArray(body.restart) ? body.restart : [];
   for (const raw of restart) {
-    const item = (raw ?? {}) as { sessionId?: unknown; reason?: unknown };
+    const item = (raw ?? {}) as { sessionId?: unknown; label?: unknown; reason?: unknown };
     const sessionId = typeof item.sessionId === 'string' ? item.sessionId : '';
     if (!sessionId) continue;
     const reason = typeof item.reason === 'string' ? truncateReason(item.reason) : '';
     rows.push({
       key: 'restart:' + sessionId,
       sessionId,
-      label: sessionId.slice(0, 8),
+      // host 会带上会话标题（见 host /alerts 的 join）；缺省退化为会话 id 前 8 位
+      label: typeof item.label === 'string' && item.label ? item.label : sessionId.slice(0, 8),
       text: '需要重启 DSH' + (reason ? ' · ' + reason : ''),
       kind: 'restart',
       dismissable: true,
@@ -118,8 +119,11 @@ export const ALERT_CSS = [
   '.dsh-pet-alerts::after{content:"";position:absolute;left:50%;bottom:calc(var(--dsh-pet-size)*-0.017);' +
     'transform:translateX(-50%);border:calc(var(--dsh-pet-size)*0.017) solid transparent;' +
     'border-top-color:rgba(255,255,255,.92);border-bottom:none}',
-  // 行卡片：白泡 + 悬浮反馈；整行点击跳会话（pointer-events 从容器 none 里单独放行）
-  '.dsh-pet-alert-row{pointer-events:auto;cursor:pointer;background:rgba(255,255,255,.92);color:#2b2b2b;' +
+  // 行卡片：白泡 + 悬浮反馈；整行点击跳会话（pointer-events 从容器 none 里单独放行）。
+  // flex-shrink:0 钉住行高：桌面容器有 max-height（窗口余量有限），行的 overflow:hidden 会把
+  // min-height:auto 打成 0，默认 shrink 会把每张卡按比例压扁、文本在半个字高处被裁断；
+  // 不收缩后超高由容器 overflow 滚动承担（桌面会在空间够时先把窗口向上加高，见 index.html）
+  '.dsh-pet-alert-row{flex-shrink:0;pointer-events:auto;cursor:pointer;background:rgba(255,255,255,.92);color:#2b2b2b;' +
     'border-radius:calc(var(--dsh-pet-size)*0.035);padding:calc(var(--dsh-pet-size)*0.018) calc(var(--dsh-pet-size)*0.028);' +
     'box-shadow:0 calc(var(--dsh-pet-size)*0.009) calc(var(--dsh-pet-size)*0.035) rgba(0,0,0,.14),0 1px 3px rgba(0,0,0,.08);' +
     'backdrop-filter:blur(6px);max-width:calc(var(--dsh-pet-size)*0.7);overflow:hidden;transition:background .15s ease}',
