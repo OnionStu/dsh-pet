@@ -314,6 +314,8 @@ export function apply(ctx: any): void {
   // 待交互提醒内存表（/alerts 端点读取）：从 DSH 会话事件推导「别的会话挂着审批/选择题/计划评审」。
   // 见 ./pending-alerts。
   const pendingAlerts = createPendingAlerts();
+  /** 折叠过会话日志但也没有 session/title 事件的会话 id（不再重扫，标题事件来了由 observe 自然入表） */
+  const titleMissed = new Set<string>();
   /** 重启提醒开关（成品配置 main 条目的 restartNoticeEnabled；每次现读，改配置即时生效） */
   const restartNoticeEnabled = (): boolean => {
     try {
@@ -1375,6 +1377,26 @@ export function apply(ctx: any): void {
       // 它们各自只关心自己的那几类事件，放在类型分派之前，避免被下面的提前 return 漏掉。
       usageFold.observe(sessionId, event);
       pendingAlerts.observe(sessionId, event);
+      // 会话标题补记：pending-alerts 的标题表只吃 session/title 事件（只覆盖宿主启动后的会话），
+      // 启动前就有标题的会话在这里从 live 会话日志折叠补记一次（与 sessionTitle.get 同语义）。
+      // 找不到标题的会话记入 titleMissed 不再重扫——标题真来了会走 observe 的 session/title 分支。
+      if (sessionId !== 'unknown' && pendingAlerts.titleOf(sessionId) === undefined && !titleMissed.has(sessionId)) {
+        const events = (
+          session as { snapshotEvents?: () => Array<{ type?: unknown; data?: unknown }> } | null
+        )?.snapshotEvents?.();
+        // 手写倒序扫（目标 lib 无 Array.findLast）：折叠最后一条 session/title
+        let title: unknown;
+        if (Array.isArray(events)) {
+          for (let i = events.length - 1; i >= 0; i--) {
+            if ((events[i] as { type?: unknown } | null)?.type === 'session/title') {
+              title = ((events[i] as { data?: unknown } | undefined)?.data as { title?: unknown } | undefined)?.title;
+              break;
+            }
+          }
+        }
+        if (typeof title === 'string' && title.trim()) pendingAlerts.noteTitle(sessionId, title);
+        else titleMissed.add(sessionId);
+      }
       if (type === 'todo/write') {
         // 任务详情文案：只写**该会话**的条目（state/task 同源，不再有全局字段，也就不可能串会话）。
         // 会话没有活动条目（已空闲/已清理）→ 不动：它不会被展示，写进去只会成为一条"幽灵文案"。

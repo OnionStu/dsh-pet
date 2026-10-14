@@ -111,7 +111,7 @@ export function makeFactory(): (require: (mod: string) => any) => any {
       // 两路各自降级，缺一路不影响另一路。
       ctx.effect(() => {
         const ac = new AbortController();
-        startApprovalAlerts(ctx, ac.signal);
+        startApprovalAlerts(ctx, openSession, ac.signal);
         return () => ac.abort();
       }, 'dsh-pet: cross-session alerts');
 

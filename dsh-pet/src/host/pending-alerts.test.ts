@@ -196,6 +196,27 @@ describe('会话标题与排序', () => {
     assert.equal(store.titleOf('别的会话'), undefined);
   });
 
+  test('noteTitle 补记启动前会话的标题；空标题与重复标题不写（ts 不推进）', () => {
+    const store = createPendingAlerts();
+    store.observe('s1', asked('a1', 'Bash'));
+    const before = store.snapshot().ts;
+    store.noteTitle('s1', '   '); // 空标题：拒绝
+    assert.equal(store.snapshot().ts, before);
+    assert.equal(store.titleOf('s1'), undefined);
+    store.noteTitle('s1', '老会话标题');
+    assert.equal(store.titleOf('s1'), '老会话标题');
+    assert.ok(store.snapshot().ts > before);
+    const after = store.snapshot().ts;
+    store.noteTitle('s1', '老会话标题'); // 重复：不推进
+    assert.equal(store.snapshot().ts, after);
+    assert.equal(store.titleOf('s1'), '老会话标题');
+    // 与 session/title 事件同一存放处：snapshot 的行标签立即吃上新标题
+    assert.deepEqual(
+      store.snapshot().items.map((i) => i.label),
+      ['老会话标题'],
+    );
+  });
+
   test('按入表时刻升序（最早的在最上），snapshot.ts 随变化推进', () => {
     const store = createPendingAlerts();
     store.observe('s1', asked('a1', 'Bash'));

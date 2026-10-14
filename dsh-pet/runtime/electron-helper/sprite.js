@@ -70,6 +70,7 @@ class PetSprite {
     this.justDragged = false;
     this._interactive = null; // 已上报的可交互状态（setInteractive 去重用）
     this._inputBusy = null; // 已上报的"正在用输入"状态（syncInputBusy 去重用）
+    this.overAlertCard = false; // 光标是否悬停在提醒卡上（inputBusy 的第四个来源，见 onMouseMove）
     // 拖拽抛掷物理（与浏览器 pet.ts 同构；纯计算在 shared-core S.*）：
     // 拖拽中弹簧跟随目标（包围盒左上角，工作区 px），松手按指针轨迹估速 → 抛掷（重力+边缘反弹）
     this.dragTrail = []; // 指针轨迹采样（screenX/Y + performance.now()，初速估算用）
@@ -206,6 +207,13 @@ class PetSprite {
         // 拖拽中与对话弹窗开着都不恢复：前者会绕过 busy 造成穿透并丢失 pointerup，
         // 后者要留光标回来点输入框。
         this.closeMenu();
+        // 提醒卡租约必须一并解除：悬停卡期间窗口是可交互的（busy），光标一走窗口就停在
+        // 可交互态、下方应用吃不到点击。穿透状态本身交给主进程（zone=outside 即翻回），
+        // 这里只清租约与本地翻转。
+        if (this.overAlertCard) {
+          this.overAlertCard = false;
+          this.syncInputBusy();
+        }
         if (!this.chatOpen && !this.dragState.active) this.setInteractive(false);
       },
       { signal: ac.signal },
@@ -980,7 +988,9 @@ class PetSprite {
    * 位移分不清"拖拽跟手"和"漫游/抛掷"）。所以由渲染端上报，主进程的兜底通道据此闭嘴。
    */
   inputBusy() {
-    return this.dragState.active || this.menuOpen || this.chatOpen;
+    // overAlertCard：提醒卡在身体外的窗口余量区，悬停它点卡/滚动也算"正在用这个窗口的输入"，
+    // 否则兜底轮询的余量区 400ms 超时会把卡片翻回穿透（读卡必超 400ms，卡片永远点不动）。
+    return this.dragState.active || this.menuOpen || this.chatOpen || this.overAlertCard === true;
   }
 
   /**
@@ -1087,9 +1097,15 @@ class PetSprite {
     // 必须在 setTip 之前更新：setTip 变显隐时会立刻渲染一次，晚一步就会用上一次的光标摆位。
     if (inBody) this.tipCursor = { x: this.pos.x - this.margin.l + wx, y: this.pos.y - this.margin.t + wy };
     // 提醒卡在宠物头顶的窗口余量区（身体命中区之外）：不算进来的话，光标一移到卡片上就被
-    // 翻回穿透，卡片点不动、也滚不动。主进程兜底通道对"窗口内、身体外"是**保持当前状态**
-    // （见 pointer-target.js），所以这里翻成可交互后不会被它翻回去。
+    // 翻回穿透，卡片点不动、也滚不动。注意主进程兜底通道对"窗口内、身体外"并非永久保持——
+    // 余量区连续停留 OFF_BODY_RELEASE_MS（400ms）后会被强制翻回穿透（见 pointer-target.js），
+    // 而读卡再点必然超过 400ms → 光翻可交互保不住卡片。所以悬停卡片期间要同时上报 inputBusy
+    // （与右键菜单同一条租约），busy 会否决位置判定，卡片才点得动；离开卡片即解除。
     const overCard = this.alertCard ? this.alertCard.containsPoint(wx, wy) : false;
+    if (overCard !== this.overAlertCard) {
+      this.overAlertCard = overCard;
+      this.syncInputBusy();
+    }
     this.setInteractive(inBody || overCard);
     // 悬浮提示与可交互判定同源（同一个 inBody）：光标进身体 → 提示出现，离开 → 收起
     this.setTip(inBody);
@@ -1374,6 +1390,13 @@ class PetSprite {
     if (sig === this.alertSig) return;
     this.alertSig = sig;
     this.alertRows = rows;
+    // 卡片从有到无（提醒被那边答了/消了）：若光标正悬停其上，悬停租约已成死约——
+    // 不再有 mousemove 能解除它（卡没了，事件落回身体/余量区判定），窗口会赖在可交互态。
+    if (rows.length === 0 && this.overAlertCard) {
+      this.overAlertCard = false;
+      this.syncInputBusy();
+      this.setInteractive(false);
+    }
     this.alertCard.update(rows);
     // 有提醒时藏掉自身气泡（余额/碎碎念/work-status）：卡片独占头顶，与浏览器同一取舍
     if (rows.length > 0) this.el.setAttribute('data-pet-alerts', '');
@@ -1384,7 +1407,8 @@ class PetSprite {
     this.respaceForAlerts();
   }
 
-  /** 行点击 → 用系统默认浏览器打开 GUI 并直达该会话（网页半侧读 ?dsh-pet-session 调 sessions.open） */
+  /** 行点击 → 用系统默认浏览器打开 GUI 并直达该会话（网页半侧读 ?dsh-pet-session，
+   *  等会话列表到达后调 uiWorkspace.openSession，见 client/session-deeplink.ts） */
   openSessionInBrowser(sessionId) {
     if (!sessionId) return;
     const url = ORIGIN + '/?' + S.SESSION_DEEPLINK_PARAM + '=' + encodeURIComponent(sessionId);

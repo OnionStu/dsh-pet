@@ -5,7 +5,8 @@
 //      0.1 里这条路走 ctx.uiSession.pendingInteractions（客户端 Map），0.2 把这个读面
 //      移除了（只剩 registerPendingInteraction 写侧），浏览器侧没有别的跨会话推送通道；
 //      host 的 pending-alerts 表本来就在（为桌面宠物做），浮层直接轮询它，两端同一份数据。
-//      会话标题/当前会话 = ctx.sessions.list；行点击 → ctx.sessions.open(sessionId) 切到该会话。
+//      会话标题/当前会话 = ctx.sessions.list；行点击 → 装配层注入的 open(sessionId) 切到该会话
+//      （0.2 的入口是 ctx.uiWorkspace.openSession；0.1 的 ctx.sessions.open 已移除）。
 //   ② 重启提醒（./restart-notice 提供轮询与派生）：agent 调 notify_restart_required 工具 →
 //      host 内存表 → 1s 轮询 → 提醒行（**不过滤当前会话**，理由见 restart-notice.ts）
 // 浮层是 body 级 position:fixed 的独立 DOM（不碰 React 宠物卡），每拍读取主宠物
@@ -284,13 +285,18 @@ function renderAlerts(
  *     当前会话过滤）；缺 sessions.list 时只关这一路（告警一次，标签退回会话 id 前 8 位）。
  *   - 重启提醒：只依赖 host 的 /restart-notice 端点，端点在就工作（不依赖 ctx 任何服务）。
  * 两路都不可用时才退化为"永远没有提醒行"（浮层保持隐藏，不影响宠物其余功能）。
+ * @param open 切会话入口，由装配层注入（0.2 为 uiWorkspace.openSession 的闭包）；
+ *             不能在本模块里直取 ctx 上的服务方法——Cordis 注入的类方法脱离实例调用必抛。
  */
-export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
+export function startApprovalAlerts(
+  ctx: unknown,
+  open: ((sessionId: string) => void) | undefined,
+  signal: AbortSignal,
+): void {
   const uiSession = (ctx as { uiSession?: unknown } | null)?.uiSession as UiSessionLike | undefined;
   const sessions = (ctx as { sessions?: unknown } | null)?.sessions as
     | {
         list?: { getSnapshot?: () => unknown; subscribe?: (l: () => void) => (() => void) | void };
-        open?: (sessionId: string) => void;
       }
     | undefined;
   const listSource = sessions?.list;
@@ -304,12 +310,11 @@ export function startApprovalAlerts(ctx: unknown, signal: AbortSignal): void {
   const root = createAlertsRoot();
 
   const openSession = (sessionId: string): void => {
-    if (typeof sessions?.open === 'function') {
-      sessions.open(sessionId);
-      // 插件页（Team 看板/我的 PR/SSH/技能中心）要么盖住宠物卡、要么把对话区藏起来，
-      // 切换后必须让它们让位，用户才能看到切过去的会话（详见 hand-back.ts）。
-      handBackCenterColumn();
-    }
+    if (typeof open !== 'function') return;
+    open(sessionId);
+    // 插件页（Team 看板/我的 PR/SSH/技能中心）要么盖住宠物卡、要么把对话区藏起来，
+    // 切换后必须让它们让位，用户才能看到切过去的会话（详见 hand-back.ts）。
+    handBackCenterColumn();
   };
 
   /** 重启提醒当前快照（由轮询回调更新） */

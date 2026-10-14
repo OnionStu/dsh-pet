@@ -18,8 +18,9 @@
  *     `completed` **不清**：配对事件可能只是晚到，宁可多留一拍也不要丢提醒。
  *
  * 与浏览器半侧的差异（刻意）：
- *   - 会话标题来自 `session/title` 事件，**只覆盖宿主本次启动之后发过标题的会话**；
- *     拿不到就退化成会话 id 前 8 位（与浏览器 `displayTitle` 的 fallback 同款）。
+ *   - 会话标题两个来源：① `session/title` 事件（只覆盖宿主本次启动之后发过标题的会话）；
+ *     ② 宿主事件流侧的 `noteTitle` 补记（启动前就有标题的会话，从 live 会话日志折叠而来）。
+ *     两者同一存放处；都没有时退化成会话 id 前 8 位（与浏览器 `displayTitle` 的 fallback 同款）。
  *   - 计划评审（exit_plan_mode）用固定文案「等你评审计划」：那句评审问句是 plan-mode 服务
  *     内部生成的，不在 tool/call 的 arguments 里（arguments 只有 plan 正文，太长）。
  *   - 不过滤"当前会话"（浏览器会过滤掉你正在看的那个会话）：host 不知道网页在看哪个会话，
@@ -108,6 +109,8 @@ export function createPendingAlerts(): {
   snapshot(): PendingAlertSnapshot;
   /** 标题查询（/alerts 给重启提醒行补 label 用）：没有记录返回 undefined（调用方自行兜底） */
   titleOf(sessionId: string): string | undefined;
+  /** 补记标题（宿主启动前的会话收不到 session/title 事件，由事件流侧从 live 会话日志折叠补记） */
+  noteTitle(sessionId: string, title: string): void;
 } {
   const table = new Map<string, PendingAlertEntry>();
   const titles = new Map<string, string>();
@@ -208,6 +211,14 @@ export function createPendingAlerts(): {
     /** 标题查询：仅覆盖宿主本次启动之后发过 session/title 的会话（见文件头），无记录返回 undefined */
     titleOf(sessionId: string): string | undefined {
       return titles.get(sessionId);
+    },
+
+    /** 补记标题：与 session/title 事件同一存放处；空标题/未变化不写（不推进 ts，避免无谓重渲染） */
+    noteTitle(sessionId: string, title: string): void {
+      const t = title.trim();
+      if (!t || titles.get(sessionId) === t) return;
+      titles.set(sessionId, t);
+      changedAt = nextTs();
     },
   };
 }
